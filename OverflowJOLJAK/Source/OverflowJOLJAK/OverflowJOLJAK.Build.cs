@@ -18,7 +18,8 @@ public class OverflowJOLJAK : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"Sockets"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
