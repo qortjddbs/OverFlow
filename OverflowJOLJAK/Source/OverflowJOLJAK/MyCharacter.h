@@ -7,6 +7,7 @@
 
 class UInputMappingContext;
 class UInputAction;
+class UNetSyncComponent;        // 추가
 
 UCLASS()
 class OVERFLOWJOLJAK_API AMyCharacter : public ACharacter
@@ -32,4 +33,7 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
     UInputAction* IA_LinkRotate;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NetSync")         // 추가
+    UNetSyncComponent* NetSyncComponent;                                        // 추가
 };

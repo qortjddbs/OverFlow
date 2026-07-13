@@ -4,6 +4,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "NetSyncComponent.h"                               // 추가
 
 // Sets default values
 AMyCharacter::AMyCharacter()
@@ -13,6 +14,8 @@ AMyCharacter::AMyCharacter()
 	GetCharacterMovement()->bOrientRotationToMovement = true;
 	GetCharacterMovement()->RotationRate = FRotator(0.f, 720.f, 0.f);
 	GetCharacterMovement()->MaxWalkSpeed = 500.f;
+
+	NetSyncComponent = CreateDefaultSubobject<UNetSyncComponent>(TEXT("NetSyncComponent"));     // 추가
 }
 
 // Called when the game starts or when spawned
