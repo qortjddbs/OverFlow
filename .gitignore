@@ -11,6 +11,10 @@
 *.tlog/
 *.exe.recipe
 
+# NuGet packages (Server project) - restorable, don't commit
+**/packages/
+*.nupkg
+
 # Compiled Object files
 *.slo
 *.lo
