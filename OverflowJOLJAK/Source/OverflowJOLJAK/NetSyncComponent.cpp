@@ -59,9 +59,6 @@ void UNetSyncComponent::ConnectToServer()
     Addr->SetIp(*ServerIP, bIsValidIp);
     Addr->SetPort(ServerPort);
 
-    // NOTE: Connect() blocks the game thread until the OS-level connect
-    // succeeds or times out. Fine for this test component; a production
-    // version would connect asynchronously.
     if (!bIsValidIp || !Socket->Connect(*Addr))
     {
         UE_LOG(LogTemp, Warning, TEXT("NetSyncComponent: failed to connect to %s:%d"), *ServerIP, ServerPort);
@@ -77,11 +74,25 @@ void UNetSyncComponent::SendToServer(float X, float Y, float Z)
         return;
     }
 
-    // Raw 12 bytes, no framing - matches main.cpp's HandlePacketBytes(),
-    // which memcpy's 3 floats straight off the wire.
-    const float Payload[3] = { X, Y, Z };
+    // 서버(server.cpp)의 size(2)+type(1) 헤더 포맷에 맞춘 패킷.
+    // Type = 1 은 서버 쪽 PKT_CS_MOVE 와 맞춰야 한다.
+    #pragma pack(push, 1)
+    struct
+    {
+        uint16 Size;
+        uint8 Type;
+        float X, Y, Z;
+    } Packet;
+    #pragma pack(pop)
+
+    Packet.Size = sizeof(Packet);
+    Packet.Type = 1; // PKT_CS_MOVE
+    Packet.X = X;
+    Packet.Y = Y;
+    Packet.Z = Z;
+
     int32 BytesSent = 0;
-    if (!Socket->Send(reinterpret_cast<const uint8*>(Payload), sizeof(Payload), BytesSent))
+    if (!Socket->Send(reinterpret_cast<const uint8*>(&Packet), sizeof(Packet), BytesSent))
     {
         UE_LOG(LogTemp, Warning, TEXT("NetSyncComponent: send failed"));
     }
