@@ -1,4 +1,4 @@
-﻿#include <winsock2.h>
+﻿#include <winsock2.h>       // 함수 선언만 가져오기
 #include <ws2tcpip.h>
 #include <windows.h>
 
@@ -12,35 +12,37 @@
 #include <unordered_map>
 #include <vector>
 
-#pragma comment(lib, "Ws2_32.lib")
+#pragma comment(lib, "Ws2_32.lib")      // winsock2.h의 진짜 코드 가져오기
 
 // 헤더: 패킷 전체 크기(size) + 패킷 종류(type) 모든 패킷은 이 헤더로 시작
-#pragma pack(push, 1)
+#pragma pack(push, 1)   // 패딩 (컴파일러가 자동으로 끼워넣는 빈 공간 - 성능을 위해) 없애기
 struct PACKET_HEADER
 {
-    unsigned short m_size; 
-    unsigned char  m_type; 
+    unsigned short m_size;  // 2바이트
+    unsigned char  m_type;  // 1바이트
 };
 
 struct cs_packet_move : PACKET_HEADER
 {
-    float m_x, m_y, m_z;
+    float m_x, m_y, m_z;    // 4바이트
 };
-#pragma pack(pop)
+#pragma pack(pop)   // 여기까지만 적용
 
-enum PACKET_TYPE : unsigned char
+enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가기 때문에 타입(크기) 명시
 {
     PKT_CS_MOVE = 1,
 };
 
+// constexpr -> 컴파일할 때 이미 확정되는 상수 (배열 크기에 넣어야 하기 때문 + 실수 방지)
+// 실수 = 런타임에만 정해지는 값을 넣으면 컴파일 에러를 띄워줌. (그냥 const는 이게 안됨)
 constexpr unsigned short LISTEN_PORT = 7777;
-constexpr int MAX_BUF_SIZE = 4096;                       
-constexpr int HEADER_SIZE = sizeof(PACKET_HEADER);       
+constexpr int MAX_BUF_SIZE = 4096;
+constexpr int HEADER_SIZE = sizeof(PACKET_HEADER);
 constexpr int MAX_PACKET_SIZE = sizeof(cs_packet_move);  // 존재하는 패킷 중 제일 큰 거
-                                                         
+
 constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 
-enum enumOperation
+enum enumOperation      // 얘는 내부에서만 쓰이는 값이라 따로 명시하지 않음
 {
     OP_RECV
 };
@@ -80,10 +82,10 @@ std::mutex g_console_lock; // cout/cerr이 여러 스레드에서 섞이지 않�
 void error_display(const char* msg, int err_no)
 {
     std::lock_guard<std::mutex> lock(g_console_lock);
-    std::cerr << "[error] " << msg << " : " << err_no << "\n";
+    std::cerr << "[error] " << msg << " : " << err_no << "\n";  // std::cout과 같이 콘솔에 출력하는데, 버퍼링 없이 즉시 출력.
 }
 
-// 다음 recv 예약하는 함수
+// 다음 recv 예약하는 함수 (OS 커널에 비동기로 예약)
 bool post_recv(SESSION* p)
 {
     ZeroMemory(&p->m_recv_over.m_wsaOver, sizeof(WSAOVERLAPPED));
@@ -94,7 +96,7 @@ bool post_recv(SESSION* p)
     DWORD recv_bytes = 0;
     DWORD flags = 0;
     int ret = WSARecv(p->m_s, &p->m_recv_over.m_wsaBuf, 1, &recv_bytes, &flags,
-        &p->m_recv_over.m_wsaOver, nullptr);
+        &p->m_recv_over.m_wsaOver, nullptr);    // 이게 본체 (이 함수의 존재 이유)
 
     if (ret == SOCKET_ERROR && WSAGetLastError() != WSA_IO_PENDING)
     {
@@ -104,8 +106,8 @@ bool post_recv(SESSION* p)
     return true;
 }
 
-// g_lock을 잠그고 g_users에서 클라이언트를 지운다.
-void disconnect(int id)
+// g_lock을 잠그고 g_users에서 클라이언트를 지운다
+void disconnect(int id) 
 {
     g_lock.lock();
     auto it = g_users.find(id);
@@ -121,10 +123,12 @@ void disconnect(int id)
     g_lock.unlock();
 }
 
+// TCP 패킷 재조립
 void process_packet(SESSION* p, int bytes_transferred)
 {
+    // memcpy (복사받을 곳 - 포인터, 복사할 곳 - 포인터, 복사할 데이터의 길이)
     memcpy(p->m_prev_buf + p->m_prev_size, p->m_recv_over.m_netbuf, bytes_transferred);
-    int data_size = p->m_prev_size + bytes_transferred;
+    int data_size = p->m_prev_size + bytes_transferred;     // 지금까지 들어온 데이터 크기
 
     char* ptr = p->m_prev_buf;
     while (data_size >= HEADER_SIZE)
@@ -135,7 +139,7 @@ void process_packet(SESSION* p, int bytes_transferred)
             break; // 더 올게 남았을 때
         }
 
-        switch (header->m_type)
+        switch (header->m_type)     // 실제 처리작업
         {
         case PKT_CS_MOVE:
         {
@@ -152,8 +156,8 @@ void process_packet(SESSION* p, int bytes_transferred)
             break; // 모르는 타입은 일단 무시
         }
 
-        ptr += header->m_size;
-        data_size -= header->m_size;
+        ptr += header->m_size;          // 처리한 만큼 포인터 뒤로 옮기기
+        data_size -= header->m_size;    // 처리한 만큼 남아있는 데이터 크기에서 빼기
     }
 
     // 패킷 처리하고 남은 자투리는 버퍼 맨 앞으로 옮겨서 다음 recv를 기다림
@@ -164,6 +168,7 @@ void process_packet(SESSION* p, int bytes_transferred)
     p->m_prev_size = data_size;
 }
 
+// 
 void worker_thread()
 {
     while (true)
@@ -172,6 +177,8 @@ void worker_thread()
         ULONG_PTR key = 0;
         WSAOVERLAPPED* over = nullptr;
 
+        // 처리할 게 있으면 처리 (worker_thread의 본체)
+        // main의 PQCS와 연계 (nullptr을 읽으면 종료되게끔)
         BOOL ret = GetQueuedCompletionStatus(g_h_iocp, &bytes_transferred, &key, &over, INFINITE);
         if (over == nullptr)
         {
@@ -196,7 +203,7 @@ void worker_thread()
 }
 
 // std::thread::hardware_concurrency()는 하이퍼스레딩까지 포함한 "논리 프로세서" 수를
-// 돌려준다. "물리 코어" 수만 세려면 표준 C++에는 방법이 없어서, Win32 API로 직접 세야 한다.
+// 돌려준다. "물리 코어" 수만 세려면 표준 C++에는 방법이 없어서, Win32 API로 직접 세야 한다. (나중에 보기)
 unsigned int get_physical_core_count()
 {
     DWORD len = 0;
@@ -224,14 +231,14 @@ unsigned int get_physical_core_count()
     return core_count;
 }
 
-// accept는 그냥 블로킹으로
+// accept는 일단 블로킹으로
 void accept_loop()
 {
     while (true)
     {
         sockaddr_in client_addr{};
         int addr_len = sizeof(client_addr);
-        SOCKET c_socket = accept(g_s_listen, reinterpret_cast<sockaddr*>(&client_addr), &addr_len);
+        SOCKET c_socket = accept(g_s_listen, reinterpret_cast<sockaddr*>(&client_addr), &addr_len);     // 여기서 블로킹
         if (c_socket == INVALID_SOCKET)
         {
             continue;
@@ -240,7 +247,7 @@ void accept_loop()
         char addr_str[INET_ADDRSTRLEN] = {};
         inet_ntop(AF_INET, &client_addr.sin_addr, addr_str, sizeof(addr_str));      // inet_ntop -> 소켓에 저장된 IP주소를 문자열로 바꿔주는 함수
 
-        int id = g_next_id.fetch_add(1);        // id 발급
+        int id = g_next_id.fetch_add(1);        // id 발급 (fetch_add는 더하기 전 값을 반환함)
 
         g_lock.lock();
         SESSION& s = g_users[id];
@@ -308,7 +315,7 @@ int main()
     unsigned int worker_count = get_physical_core_count();
     if (worker_count == 0)
     {
-        worker_count = 4;
+        worker_count = 4;       // cpu 코어 갯수 못읽으면 기본으로 쓰레드 4개 설정
     }
 
     std::vector<std::thread> workers;
@@ -324,7 +331,11 @@ int main()
 
     for (unsigned int i = 0; i < worker_count; ++i)
     {
-        PostQueuedCompletionStatus(g_h_iocp, 0, 0, nullptr);
+        PostQueuedCompletionStatus(g_h_iocp, 0, 0, nullptr);    
+        // PQCS는 원래 쓰레드 풀에 작업을 넣어주는 함수. 
+        // 근데 여기서는 overlapped 포인터가 들어가야 하는 
+        // 자리(마지막 인자)에 nullptr을 넣음으로써 
+        // GQCS에서 이 작업을 꺼냈을 때 종료하게끔 설계.
     }
     for (auto& t : workers)
     {
