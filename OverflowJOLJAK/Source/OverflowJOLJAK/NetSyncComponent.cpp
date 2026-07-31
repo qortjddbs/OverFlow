@@ -1,10 +1,11 @@
-#include "NetSyncComponent.h"
+﻿#include "NetSyncComponent.h"
 
 #include "GameFramework/Actor.h"
 #include "IPAddress.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 #include "TimerManager.h"
+#include "..\..\Shared\Protocol.h"
 
 UNetSyncComponent::UNetSyncComponent()
 {
@@ -19,7 +20,8 @@ void UNetSyncComponent::BeginPlay()
 
     if (AActor* Owner = GetOwner())
     {
-        Owner->GetWorldTimerManager().SetTimer(SendTimerHandle, this, &UNetSyncComponent::SendPositionTick, 1.0f, true);
+        Owner->GetWorldTimerManager().SetTimer(SendTimerHandle, this, &UNetSyncComponent::SendPositionTick, 1.0f / 30.0f, true);
+        Owner->GetWorldTimerManager().SetTimer(RecvTimerHandle, this, &UNetSyncComponent::ReceiveFromServer, 0.03f, true);
     }
 }
 
@@ -28,6 +30,7 @@ void UNetSyncComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
     if (AActor* Owner = GetOwner())
     {
         Owner->GetWorldTimerManager().ClearTimer(SendTimerHandle);
+        Owner->GetWorldTimerManager().ClearTimer(RecvTimerHandle);
     }
 
     if (Socket)
@@ -74,25 +77,15 @@ void UNetSyncComponent::SendToServer(float X, float Y, float Z)
         return;
     }
 
-    // 서버(server.cpp)의 size(2)+type(1) 헤더 포맷에 맞춘 패킷.
-    // Type = 1 은 서버 쪽 PKT_CS_MOVE 와 맞춰야 한다.
-    #pragma pack(push, 1)
-    struct
-    {
-        uint16 Size;
-        uint8 Type;
-        float X, Y, Z;
-    } Packet;
-    #pragma pack(pop)
-
-    Packet.Size = sizeof(Packet);
-    Packet.Type = 1; // PKT_CS_MOVE
-    Packet.X = X;
-    Packet.Y = Y;
-    Packet.Z = Z;
+    cs_packet_move mp;
+    mp.m_size = sizeof(mp);
+    mp.m_type = PKT_C2S_MOVE;
+    mp.m_x = X;
+    mp.m_y = Y;
+    mp.m_z = Z;
 
     int32 BytesSent = 0;
-    if (!Socket->Send(reinterpret_cast<const uint8*>(&Packet), sizeof(Packet), BytesSent))
+    if (!Socket->Send(reinterpret_cast<const uint8*>(&mp), sizeof(mp), BytesSent))
     {
         UE_LOG(LogTemp, Warning, TEXT("NetSyncComponent: send failed"));
     }
@@ -104,5 +97,59 @@ void UNetSyncComponent::SendPositionTick()
     {
         const FVector Loc = Owner->GetActorLocation();
         SendToServer(Loc.X, Loc.Y, Loc.Z);
+    }
+}
+
+void UNetSyncComponent::ReceiveFromServer()
+{
+    if (!Socket)
+    {
+        return;
+    }
+
+    // 1. 소켓에 쌓인 데이터를 전부 RecvBuffer로 옮겨오기
+    uint32 PendingDataSize = 0;
+    while (Socket->HasPendingData(PendingDataSize))
+    {
+        uint8 Temp[4096];
+        int32 BytesRead = 0;
+
+        if (!Socket->Recv(Temp, sizeof(Temp), BytesRead))
+        {
+            break;
+        }
+
+        RecvBuffer.Append(Temp, BytesRead);
+    }
+
+    // 2. RecvBuffer에 쌓인 걸 패킷 단위로 잘라서 처리
+    while (RecvBuffer.Num() >= sizeof(PACKET_HEADER))
+    {
+        PACKET_HEADER* Header = reinterpret_cast<PACKET_HEADER*>(RecvBuffer.GetData());
+
+        if (RecvBuffer.Num() < Header->m_size)
+        {
+            break;
+        }
+
+        switch (Header->m_type)
+        {
+        case PKT_S2C_ADD_PLAYER:
+            UE_LOG(LogTemp, Log, TEXT("ADD_PLAYER packet received"));
+            break;
+
+        case PKT_S2C_POSITION:
+            UE_LOG(LogTemp, Log, TEXT("POSITION packet received"));
+            break;
+
+        case PKT_S2C_REMOVE_PLAYER:
+            UE_LOG(LogTemp, Log, TEXT("REMOVE_PLAYER packet received"));
+            break;
+
+        default:
+            break;
+        }
+
+        RecvBuffer.RemoveAt(0, Header->m_size);
     }
 }

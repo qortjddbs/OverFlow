@@ -12,39 +12,23 @@
 #include <unordered_map>
 #include <vector>
 
+#include "..\Shared\Protocol.h"
+
 #pragma comment(lib, "Ws2_32.lib")      // winsock2.h의 진짜 코드 가져오기
-
-// 헤더: 패킷 전체 크기(size) + 패킷 종류(type) 모든 패킷은 이 헤더로 시작
-#pragma pack(push, 1)   // 패딩 (컴파일러가 자동으로 끼워넣는 빈 공간 - 성능을 위해) 없애기
-struct PACKET_HEADER
-{
-    unsigned short m_size;  // 2바이트
-    unsigned char  m_type;  // 1바이트
-};
-
-struct cs_packet_move : PACKET_HEADER
-{
-    float m_x, m_y, m_z;    // 4바이트
-};
-#pragma pack(pop)   // 여기까지만 적용
-
-enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가기 때문에 타입(크기) 명시
-{
-    PKT_CS_MOVE = 1,
-};
 
 // constexpr -> 컴파일할 때 이미 확정되는 상수 (배열 크기에 넣어야 하기 때문 + 실수 방지)
 // 실수 = 런타임에만 정해지는 값을 넣으면 컴파일 에러를 띄워줌. (그냥 const는 이게 안됨)
 constexpr unsigned short LISTEN_PORT = 7777;
 constexpr int MAX_BUF_SIZE = 4096;
 constexpr int HEADER_SIZE = sizeof(PACKET_HEADER);
-constexpr int MAX_PACKET_SIZE = sizeof(cs_packet_move);  // 존재하는 패킷 중 제일 큰 거
+constexpr int MAX_PACKET_SIZE = sizeof(sc_packet_add_player);  // 존재하는 패킷 중 제일 큰 거
 
 constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 
 enum enumOperation      // 얘는 내부에서만 쓰이는 값이라 따로 명시하지 않음
 {
-    OP_RECV
+    OP_RECV,
+    OP_SEND
 };
 
 struct EXP_OVER
@@ -68,6 +52,8 @@ struct SESSION
     float m_x = 0.f;
     float m_y = 0.f;
     float m_z = 0.f;
+
+    int m_visual = 0;       // 일단 임시로 생성. 나중가면 enum으로 따로 만들어야될듯. (디폴트 0 -> 젤다)
 };
 
 HANDLE g_h_iocp = nullptr;
@@ -77,12 +63,41 @@ std::atomic<int> g_next_id{ 1 }; // 클라이언트마다 겹치지 않는 id를
 std::mutex g_lock;                        // g_users 전체를 보호
 std::unordered_map<int, SESSION> g_users; // key = client id
 
-std::mutex g_console_lock; // cout/cerr이 여러 스레드에서 섞이지 않게
+std::mutex g_console_lock;                  // cout/cerr이 여러 스레드에서 섞이지 않게
 
 void error_display(const char* msg, int err_no)
 {
     std::lock_guard<std::mutex> lock(g_console_lock);
     std::cerr << "[error] " << msg << " : " << err_no << "\n";  // std::cout과 같이 콘솔에 출력하는데, 버퍼링 없이 즉시 출력.
+}
+
+// std::thread::hardware_concurrency()는 하이퍼스레딩까지 포함한 "논리 프로세서" 수를
+// 돌려준다. "물리 코어" 수만 세려면 표준 C++에는 방법이 없어서, Win32 API로 직접 세야 한다. (나중에 보기)
+unsigned int get_physical_core_count()
+{
+    DWORD len = 0;
+    GetLogicalProcessorInformation(nullptr, &len); // 필요한 버퍼 크기만 먼저 물어본다
+
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0)
+    {
+        return std::thread::hardware_concurrency(); // 실패하면 논리 코어 수로 대체
+    }
+
+    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> info(len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
+    if (!GetLogicalProcessorInformation(info.data(), &len))
+    {
+        return std::thread::hardware_concurrency();
+    }
+
+    unsigned int core_count = 0;
+    for (const auto& e : info)
+    {
+        if (e.Relationship == RelationProcessorCore)
+        {
+            ++core_count; // 이 엔트리 하나 = 물리 코어 하나 (하이퍼스레딩 여부와 무관)
+        }
+    }
+    return core_count;
 }
 
 // 다음 recv 예약하는 함수 (OS 커널에 비동기로 예약)
@@ -106,10 +121,28 @@ bool post_recv(SESSION* p)
     return true;
 }
 
+bool send_packet(SESSION* target, const void* pkt, int size)
+{
+    const char* packet = reinterpret_cast<const char*>(pkt);
+
+    int total_sent = 0;
+    while (total_sent < size)
+    {
+        int ret = send(target->m_s, packet + total_sent, size - total_sent, 0);
+        if (ret == SOCKET_ERROR)
+        {
+            error_display("send", WSAGetLastError());
+            return false;
+        }
+        total_sent += ret;
+    }
+    return true;
+}
+
 // g_lock을 잠그고 g_users에서 클라이언트를 지운다
 void disconnect(int id) 
 {
-    g_lock.lock();
+    std::lock_guard<std::mutex> lock(g_lock);
     auto it = g_users.find(id);
     if (it != g_users.end())
     {
@@ -118,9 +151,40 @@ void disconnect(int id)
             std::lock_guard<std::mutex> lock(g_console_lock);
             std::cout << "[server] client " << it->second.m_id << " (" << it->second.m_addr << ") disconnected\n";
         }
+
+        sc_packet_remove_player rp;
+        rp.m_size = sizeof(rp);
+        rp.m_type = PKT_S2C_REMOVE_PLAYER;
+        rp.m_id = id;
+
+        for (auto& [myId, session] : g_users)
+        {
+            if (id == myId) continue;
+            send_packet(&session, &rp, sizeof(rp));
+        }
+
         g_users.erase(it);
     }
-    g_lock.unlock();
+}
+
+void update_position(SESSION* me)
+{
+    sc_packet_position up;
+    up.m_size = sizeof(up);
+    up.m_type = PKT_S2C_POSITION;
+    up.m_id = me->m_id;
+    up.m_x = me->m_x;
+    up.m_y = me->m_y;
+    up.m_z = me->m_z;
+
+    {
+        std::lock_guard<std::mutex> lock(g_lock);
+        for (auto& [id, session] : g_users)
+        {
+            if (id == me->m_id) continue;
+            send_packet(&session, &up, sizeof(up));
+        }
+    }
 }
 
 // TCP 패킷 재조립
@@ -141,15 +205,17 @@ void process_packet(SESSION* p, int bytes_transferred)
 
         switch (header->m_type)     // 실제 처리작업
         {
-        case PKT_CS_MOVE:
+        case PKT_C2S_MOVE:
         {
             cs_packet_move* pkt = reinterpret_cast<cs_packet_move*>(ptr);
             p->m_x = pkt->m_x;
             p->m_y = pkt->m_y;
             p->m_z = pkt->m_z;
 
-            std::lock_guard<std::mutex> lock(g_console_lock);
-            std::cout << "[client " << p->m_id << "] pos = (" << p->m_x << ", " << p->m_y << ", " << p->m_z << ")\n";
+            update_position(p);
+
+            // std::lock_guard<std::mutex> lock(g_console_lock);
+            // std::cout << "[client " << p->m_id << "] pos = (" << p->m_x << ", " << p->m_y << ", " << p->m_z << ")\n";
             break;
         }
         default:
@@ -168,7 +234,6 @@ void process_packet(SESSION* p, int bytes_transferred)
     p->m_prev_size = data_size;
 }
 
-// 
 void worker_thread()
 {
     while (true)
@@ -202,33 +267,56 @@ void worker_thread()
     }
 }
 
-// std::thread::hardware_concurrency()는 하이퍼스레딩까지 포함한 "논리 프로세서" 수를
-// 돌려준다. "물리 코어" 수만 세려면 표준 C++에는 방법이 없어서, Win32 API로 직접 세야 한다. (나중에 보기)
-unsigned int get_physical_core_count()
+void add_player_notification(SESSION* p)
 {
-    DWORD len = 0;
-    GetLogicalProcessorInformation(nullptr, &len); // 필요한 버퍼 크기만 먼저 물어본다
+    sc_packet_add_player ap;
+    ap.m_size = sizeof(ap);
+    ap.m_type = PKT_S2C_ADD_PLAYER;
+    ap.m_id = p->m_id;
+    ap.m_visual = p->m_visual;
+    ap.m_x = p->m_x;
+    ap.m_y = p->m_y;
+    ap.m_z = p->m_z;
 
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0)
     {
-        return std::thread::hardware_concurrency(); // 실패하면 논리 코어 수로 대체
-    }
+        std::lock_guard<std::mutex> lock(g_lock);
 
-    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> info(len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
-    if (!GetLogicalProcessorInformation(info.data(), &len))
-    {
-        return std::thread::hardware_concurrency();
-    }
-
-    unsigned int core_count = 0;
-    for (const auto& e : info)
-    {
-        if (e.Relationship == RelationProcessorCore)
+        // 새로 들어온 애만 빼고 나머지한테 새로 들어온 애 정보 보내기
+        for (auto& [id, session] : g_users)
         {
-            ++core_count; // 이 엔트리 하나 = 물리 코어 하나 (하이퍼스레딩 여부와 무관)
+            if (id == p->m_id)
+            {
+                continue;
+            }
+            send_packet(&session, &ap, sizeof(sc_packet_add_player));
+
+            std::lock_guard<std::mutex> console_lock(g_console_lock);
+            std::cout << "[server] notified client " << id << " about new player " << p->m_id << "\n";
+        }
+
+        // 새로 들어온 애한테 나머지 애들 정보 보내주기
+        for (auto& [id, session] : g_users)
+        {
+            if (id == p->m_id)
+            {
+                continue;
+            }
+
+            sc_packet_add_player add;
+            add.m_size = sizeof(add);
+            add.m_type = PKT_S2C_ADD_PLAYER;
+            add.m_id = session.m_id;
+            add.m_visual = session.m_visual;
+            add.m_x = session.m_x;
+            add.m_y = session.m_y;
+            add.m_z = session.m_z;
+
+            send_packet(p, &add, sizeof(add));
+
+            std::lock_guard<std::mutex> console_lock(g_console_lock);
+            std::cout << "[server] sent existing player " << id << " info to new client " << p->m_id << "\n";
         }
     }
-    return core_count;
 }
 
 // accept는 일단 블로킹으로
@@ -267,7 +355,10 @@ void accept_loop()
         if (!post_recv(p))
         {
             disconnect(id);
+            continue;
         }
+
+        add_player_notification(p);
     }
 }
 

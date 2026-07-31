@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
@@ -27,8 +27,11 @@ protected:
 private:
     FSocket* Socket = nullptr;
     FTimerHandle SendTimerHandle;
+    FTimerHandle RecvTimerHandle;
+    TArray<uint8> RecvBuffer;
 
     void ConnectToServer();
+    void ReceiveFromServer();
     void SendToServer(float X, float Y, float Z);
     void SendPositionTick();
 };
