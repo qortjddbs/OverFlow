@@ -21,7 +21,7 @@
 constexpr unsigned short LISTEN_PORT = 7777;
 constexpr int MAX_BUF_SIZE = 4096;
 constexpr int HEADER_SIZE = sizeof(PACKET_HEADER);
-constexpr int MAX_PACKET_SIZE = sizeof(sc_packet_add_player);  // 존재하는 패킷 중 제일 큰 거
+constexpr int MAX_PACKET_SIZE = sizeof(sc_packet_monster_spawn);  // 존재하는 패킷 중 제일 큰 거
 
 constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 
@@ -53,7 +53,17 @@ struct SESSION
     float m_y = 0.f;
     float m_z = 0.f;
 
-    int m_visual = 0;       // 일단 임시로 생성. 나중가면 enum으로 따로 만들어야될듯. (디폴트 0 -> 젤다)
+    int m_visual = 0;       // 일단 임시로 생성. 나중가면 enum으로 따로 만들어야될듯. (디폴트 0 -> 기본 캐릭터)
+};
+
+struct MONSTER
+{
+    int m_id = 0;
+    unsigned int m_monster_type = 0;     // pragma pack이 없어 unsigned char로 해도 4바이트로 들어감. 그래서 그냥 unsigned int로
+    float m_x = 0.f;
+    float m_y = 0.f;
+    float m_z = 0.f;
+    int m_hp = 0;
 };
 
 HANDLE g_h_iocp = nullptr;
@@ -61,7 +71,9 @@ SOCKET g_s_listen = INVALID_SOCKET;
 std::atomic<int> g_next_id{ 1 }; // 클라이언트마다 겹치지 않는 id를 하나씩 나눠준다
 
 std::mutex g_lock;                        // g_users 전체를 보호
-std::unordered_map<int, SESSION> g_users; // key = client id
+std::unordered_map<int, SESSION> g_users;   // key = client id
+
+std::vector <MONSTER> g_monsters;
 
 std::mutex g_console_lock;                  // cout/cerr이 여러 스레드에서 섞이지 않게
 
@@ -214,8 +226,8 @@ void process_packet(SESSION* p, int bytes_transferred)
 
             update_position(p);
 
-            // std::lock_guard<std::mutex> lock(g_console_lock);
-            // std::cout << "[client " << p->m_id << "] pos = (" << p->m_x << ", " << p->m_y << ", " << p->m_z << ")\n";
+            std::lock_guard<std::mutex> lock(g_console_lock);
+            std::cout << "[client " << p->m_id << "] pos = (" << p->m_x << ", " << p->m_y << ", " << p->m_z << ")\n";
             break;
         }
         default:
