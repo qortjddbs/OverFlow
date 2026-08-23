@@ -11,6 +11,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <chrono>
+#include <cmath>
 
 #include "..\Shared\Protocol.h"
 
@@ -24,6 +26,21 @@ constexpr int HEADER_SIZE = sizeof(PACKET_HEADER);
 constexpr int MAX_PACKET_SIZE = sizeof(sc_packet_monster_spawn);  // 존재하는 패킷 중 제일 큰 거
 
 constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
+
+// 몬스터 초기 좌표
+constexpr float MONSTER_SPAWN_POSITION_X = 0.f;
+constexpr float MONSTER_SPAWN_POSITION_Y = 0.f;
+constexpr float MONSTER_SPAWN_POSITION_Z = 0.f;
+
+constexpr float MONSTER_SPAWN_MIN_RADIUS = 300.f;
+constexpr float MONSTER_SPAWN_MAX_RADIUS = 1500.f;
+
+constexpr float MONSTER_CHASE_RANGE = 1000.f;
+constexpr float MONSTER_ATTACK_RANGE = 100.f;
+constexpr float MONSTER_ATTACK_COOL = 1.f;
+
+constexpr int MONSTER_HEARTBEAT = 100;
+constexpr float MONSTER_MOVE_SPEED = 10.f;
 
 enum enumOperation      // 얘는 내부에서만 쓰이는 값이라 따로 명시하지 않음
 {
@@ -56,6 +73,13 @@ struct SESSION
     int m_visual = 0;       // 일단 임시로 생성. 나중가면 enum으로 따로 만들어야될듯. (디폴트 0 -> 기본 캐릭터)
 };
 
+enum MonsterState
+{
+    IDLE,
+    CHASE,
+    ATTACK
+};
+
 struct MONSTER
 {
     int m_id = 0;
@@ -64,15 +88,20 @@ struct MONSTER
     float m_y = 0.f;
     float m_z = 0.f;
     int m_hp = 0;
+
+    MonsterState m_state = IDLE;
+    int m_target_id = 0;
+    std::chrono::steady_clock::time_point m_last_attack;        // 항상 앞으로만 흐르는 시계(steady_clock)로 잰, 특정 시각 하나(time_point)
 };
 
 HANDLE g_h_iocp = nullptr;
 SOCKET g_s_listen = INVALID_SOCKET;
 std::atomic<int> g_next_id{ 1 }; // 클라이언트마다 겹치지 않는 id를 하나씩 나눠준다
 
-std::mutex g_lock;                        // g_users 전체를 보호
-std::unordered_map<int, SESSION> g_users;   // key = client id
+std::mutex g_player_lock;                        // g_players 전체를 보호
+std::unordered_map<int, SESSION> g_players;   // key = client id
 
+std::mutex g_monster_lock;
 std::vector <MONSTER> g_monsters;
 
 std::mutex g_console_lock;                  // cout/cerr이 여러 스레드에서 섞이지 않게
@@ -151,12 +180,12 @@ bool send_packet(SESSION* target, const void* pkt, int size)
     return true;
 }
 
-// g_lock을 잠그고 g_users에서 클라이언트를 지운다
+// g_player_lock을 잠그고 g_players에서 클라이언트를 지운다
 void disconnect(int id) 
 {
-    std::lock_guard<std::mutex> lock(g_lock);
-    auto it = g_users.find(id);
-    if (it != g_users.end())
+    std::lock_guard<std::mutex> lock(g_player_lock);
+    auto it = g_players.find(id);
+    if (it != g_players.end())
     {
         closesocket(it->second.m_s);
         {
@@ -169,13 +198,13 @@ void disconnect(int id)
         rp.m_type = PKT_S2C_REMOVE_PLAYER;
         rp.m_id = id;
 
-        for (auto& [myId, session] : g_users)
+        for (auto& [myId, session] : g_players)
         {
             if (id == myId) continue;
             send_packet(&session, &rp, sizeof(rp));
         }
 
-        g_users.erase(it);
+        g_players.erase(it);
     }
 }
 
@@ -190,8 +219,8 @@ void update_position(SESSION* me)
     up.m_z = me->m_z;
 
     {
-        std::lock_guard<std::mutex> lock(g_lock);
-        for (auto& [id, session] : g_users)
+        std::lock_guard<std::mutex> lock(g_player_lock);
+        for (auto& [id, session] : g_players)
         {
             if (id == me->m_id) continue;
             send_packet(&session, &up, sizeof(up));
@@ -291,10 +320,10 @@ void add_player_notification(SESSION* p)
     ap.m_z = p->m_z;
 
     {
-        std::lock_guard<std::mutex> lock(g_lock);
+        std::lock_guard<std::mutex> lock(g_player_lock);
 
         // 새로 들어온 애만 빼고 나머지한테 새로 들어온 애 정보 보내기
-        for (auto& [id, session] : g_users)
+        for (auto& [id, session] : g_players)
         {
             if (id == p->m_id)
             {
@@ -307,7 +336,7 @@ void add_player_notification(SESSION* p)
         }
 
         // 새로 들어온 애한테 나머지 애들 정보 보내주기
-        for (auto& [id, session] : g_users)
+        for (auto& [id, session] : g_players)
         {
             if (id == p->m_id)
             {
@@ -331,6 +360,26 @@ void add_player_notification(SESSION* p)
     }
 }
 
+void send_monster_list(SESSION* p)
+{
+    std::lock_guard<std::mutex> lock(g_monster_lock);
+
+    for (auto& m : g_monsters)
+    {
+        sc_packet_monster_spawn ms;
+        ms.m_size = sizeof(ms);
+        ms.m_type = PKT_S2C_MONSTER_SPAWN;
+        ms.m_id = m.m_id;
+        ms.m_hp = m.m_hp;
+        ms.m_x = m.m_x;
+        ms.m_y = m.m_y;
+        ms.m_z = m.m_z;
+        ms.m_monster_type = 0;
+
+        send_packet(p, &ms, sizeof(ms));
+    }
+}
+
 // accept는 일단 블로킹으로
 void accept_loop()
 {
@@ -349,13 +398,13 @@ void accept_loop()
 
         int id = g_next_id.fetch_add(1);        // id 발급 (fetch_add는 더하기 전 값을 반환함)
 
-        g_lock.lock();
-        SESSION& s = g_users[id];
+        g_player_lock.lock();
+        SESSION& s = g_players[id];
         s.m_id = id;
         s.m_s = c_socket;
         s.m_addr = std::string(addr_str) + ":" + std::to_string(ntohs(client_addr.sin_port));
         SESSION* p = &s;
-        g_lock.unlock();
+        g_player_lock.unlock();
 
         CreateIoCompletionPort(reinterpret_cast<HANDLE>(c_socket), g_h_iocp, reinterpret_cast<ULONG_PTR>(p), 0);
 
@@ -371,6 +420,115 @@ void accept_loop()
         }
 
         add_player_notification(p);
+        send_monster_list(p);
+    }
+}
+
+void spawn_initial_monsters()
+{
+    for (int i = 0; i < 10; ++i)
+    {
+        float angle = static_cast<float>(rand()) / RAND_MAX * 2.f * 3.14159265f;
+        float radian = MONSTER_SPAWN_MIN_RADIUS + static_cast<float>(rand()) / RAND_MAX * (MONSTER_SPAWN_MAX_RADIUS - MONSTER_SPAWN_MIN_RADIUS);
+
+        MONSTER m;
+        m.m_id = i + 1;
+        m.m_x = MONSTER_SPAWN_POSITION_X;
+        m.m_y = MONSTER_SPAWN_POSITION_Y;
+        m.m_z = MONSTER_SPAWN_POSITION_Z;
+        m.m_monster_type = 0;
+        m.m_hp = 100;
+
+        g_monsters.push_back(m);
+    }
+}
+
+void monster_ai_tick()      // 쓰레드가 실행
+{
+    while (true) 
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(MONSTER_HEARTBEAT));
+        {
+            std::lock_guard<std::mutex> player_lock(g_player_lock);        // 항상 플레이어 락 먼저
+            std::lock_guard<std::mutex> monster_lock(g_monster_lock);       // 그 다음 몬스터 락 (데드락 방지)
+
+            for (auto& mon : g_monsters) 
+            {
+                float min_distance = MONSTER_CHASE_RANGE;
+                int player_id = 0;
+
+                float l_dx, l_dy;
+
+                for (auto& [id, session] : g_players) 
+                {
+                    float dx = session.m_x - mon.m_x;
+                    float dy = session.m_y - mon.m_y;
+                    float distance = sqrtf(dx * dx + dy * dy);
+
+                    if (distance <= min_distance) 
+                    {
+                        min_distance = distance;
+                        player_id = id;
+                    
+                        l_dx = dx;
+                        l_dy = dy;
+                    }
+                }
+
+                if (player_id == 0)
+                {
+                    mon.m_state = IDLE;
+                    mon.m_target_id = 0;
+                }
+                else if (min_distance <= MONSTER_CHASE_RANGE && min_distance > MONSTER_ATTACK_RANGE)
+                {
+                    mon.m_state = CHASE;
+                    mon.m_target_id = player_id;
+
+                    // 정규화 (방향만 뽑기)
+                    float nx = l_dx / min_distance;
+                    float ny = l_dy / min_distance;
+
+                    mon.m_x += nx * MONSTER_MOVE_SPEED;
+                    mon.m_y += ny * MONSTER_MOVE_SPEED;
+
+                    sc_packet_monster_position mp;
+                    mp.m_size = sizeof(mp);
+                    mp.m_type = PKT_S2C_MONSTER_POSITION;
+                    mp.m_id = mon.m_id;
+                    mp.m_x = mon.m_x;
+                    mp.m_y = mon.m_y;
+                    mp.m_z = mon.m_z;
+
+                    for (auto& [id, session] : g_players)
+                    {
+                        send_packet(&session, &mp, sizeof(mp));
+                    }
+                }
+                else if (min_distance <= MONSTER_ATTACK_RANGE)
+                {
+                    mon.m_state = ATTACK;
+                    mon.m_target_id = player_id;
+
+                    auto now = std::chrono::steady_clock::now();
+                    if (now - mon.m_last_attack >= std::chrono::duration<float>(MONSTER_ATTACK_COOL))
+                    {
+                        sc_packet_monster_attack ma;
+                        ma.m_size = sizeof(ma);
+                        ma.m_type = PKT_S2C_MONSTER_ATTACK;
+                        ma.m_id = mon.m_id;
+                        ma.m_target_id = mon.m_target_id;
+
+                        for (auto& [id, session] : g_players)
+                        {
+                            send_packet(&session, &ma, sizeof(ma));
+                        }
+
+                        mon.m_last_attack = now;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -415,6 +573,9 @@ int main()
         return 1;
     }
 
+    srand(static_cast<unsigned>(time(nullptr)));
+    spawn_initial_monsters();
+
     unsigned int worker_count = get_physical_core_count();
     if (worker_count == 0)
     {
@@ -430,7 +591,13 @@ int main()
 
     std::cout << "[server] listening on port " << LISTEN_PORT << " with " << worker_count << " worker threads\n";
 
-    accept_loop();
+    std::thread(monster_ai_tick).detach();      // detach : 정리해야 할 공유 자원이 없을 경우. (알아서 돌아라, 신경 안 쓴다)
+
+    // 추가로 위 코드는 아래 두 줄과 완전히 동일한 코드 (대신 어딘가에 저장을 하지 않아 변수명을 부여할 필요가 없음)
+    // std::thread ai_thread(monster_ai_tick);
+    // ai_thread.detach();
+
+    accept_loop();      // 지금 코드는 사실상 여기서 다음으로 안넘어감. (정상 종료가 없기 때문)
 
     for (unsigned int i = 0; i < worker_count; ++i)
     {
@@ -442,7 +609,7 @@ int main()
     }
     for (auto& t : workers)
     {
-        t.join();
+        t.join();       // join : 정리해야 할 공유 자원이 있는 경우 (소켓, IOCP 핸들 등)
     }
 
     closesocket(g_s_listen);
