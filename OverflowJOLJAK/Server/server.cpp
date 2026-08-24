@@ -13,6 +13,7 @@
 #include <vector>
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 
 #include "..\Shared\Protocol.h"
 
@@ -20,27 +21,29 @@
 
 // constexpr -> 컴파일할 때 이미 확정되는 상수 (배열 크기에 넣어야 하기 때문 + 실수 방지)
 // 실수 = 런타임에만 정해지는 값을 넣으면 컴파일 에러를 띄워줌. (그냥 const는 이게 안됨)
+
+// 네트워크 관련 상수들
 constexpr unsigned short LISTEN_PORT = 7777;
 constexpr int MAX_BUF_SIZE = 4096;
 constexpr int HEADER_SIZE = sizeof(PACKET_HEADER);
-constexpr int MAX_PACKET_SIZE = sizeof(sc_packet_monster_spawn);  // 존재하는 패킷 중 제일 큰 거
-
+constexpr int MAX_PACKET_SIZE = sizeof(cs_packet_player_attack);  // 존재하는 패킷 중 제일 큰 거
 constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 
-// 몬스터 초기 좌표
+// 플레이어 관련 상수들
+constexpr int PLAYER_ATTACK_DAMAGE = 40;
+
+// 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = 0.f;
 constexpr float MONSTER_SPAWN_POSITION_Y = 0.f;
 constexpr float MONSTER_SPAWN_POSITION_Z = 1000.f;
-
 constexpr float MONSTER_SPAWN_MIN_RADIUS = 300.f;
 constexpr float MONSTER_SPAWN_MAX_RADIUS = 1500.f;
-
 constexpr float MONSTER_CHASE_RANGE = 1000.f;
 constexpr float MONSTER_ATTACK_RANGE = 100.f;
 constexpr float MONSTER_ATTACK_COOL = 1.f;
-
 constexpr int MONSTER_HEARTBEAT = 100;
 constexpr float MONSTER_MOVE_SPEED = 10.f;
+constexpr float MONSTER_HIT_RADIUS = 34.f;      // 몬스터 중심으로부터 히트박스(구) 반지름 길이
 
 enum enumOperation      // 얘는 내부에서만 쓰이는 값이라 따로 명시하지 않음
 {
@@ -210,9 +213,9 @@ void disconnect(int id)
 
 void update_position(SESSION* me)
 {
-    sc_packet_position up;
+    sc_packet_player_position up;
     up.m_size = sizeof(up);
-    up.m_type = PKT_S2C_POSITION;
+    up.m_type = PKT_S2C_PLAYER_POSITION;
     up.m_id = me->m_id;
     up.m_x = me->m_x;
     up.m_y = me->m_y;
@@ -224,6 +227,112 @@ void update_position(SESSION* me)
         {
             if (id == me->m_id) continue;
             send_packet(&session, &up, sizeof(up));
+        }
+    }
+}
+
+void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // 공격 판정
+{
+    float dx = pkt->m_dir_x;
+    float dy = pkt->m_dir_y;
+    float dz = pkt->m_dir_z;
+
+    float len = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (len < 0.0001f)
+    {
+        return;     // 방향이 없는 패킷은 그냥 무시
+    }
+     
+    float nx = dx / len;
+    float ny = dy / len;
+    float nz = dz / len;
+
+    sc_packet_monster_hp hp_pkt{};
+    bool hit_broadcast = false;
+
+    sc_packet_monster_remove remove_pkt{};
+    bool remove_broadcast = false;
+
+    {
+        std::lock_guard<std::mutex> monster_lock(g_monster_lock);
+        float closest_t = 50000.f;
+        MONSTER* hit_mon = nullptr;
+
+        for (auto& mon : g_monsters)
+        {
+            // 1. 발사 원점 -> 몬스터까지의 거리 (OM)
+            float omx = mon.m_x - pkt->m_origin_x;
+            float omy = mon.m_y - pkt->m_origin_y;
+            float omz = mon.m_z - pkt->m_origin_z;
+
+            // 2. 방향벡터에 투영 (내적, dot product)
+            float t = omx * nx + omy * ny + omz * nz;
+            if (t < 0.f)
+            {
+                continue;   // 발사자 뒤쪽 몬스터는 무시
+            }
+
+            // 3. 광선 위에서 몬스터에 제일 가까운 점 (P)
+            float px = pkt->m_origin_x + nx * t;
+            float py = pkt->m_origin_y + ny * t;
+            float pz = pkt->m_origin_z + nz * t;
+
+            // 4. 그 점에서 몬스터 중심까지의 거리
+            float ddx = mon.m_x - px;
+            float ddy = mon.m_y - py;
+            float ddz = mon.m_z - pz;
+            float dist = sqrtf(ddx * ddx + ddy * ddy + ddz * ddz);
+
+            if (dist <= MONSTER_HIT_RADIUS && t < closest_t)
+            {
+                closest_t = t;
+                hit_mon = &mon;
+            }
+        }
+
+        if (hit_mon != nullptr)
+        {
+            hit_mon->m_hp -= PLAYER_ATTACK_DAMAGE;
+
+            if (hit_mon->m_hp <= 0)
+            {
+                remove_pkt.m_size = sizeof(remove_pkt);
+                remove_pkt.m_type = PKT_S2C_MONSTER_REMOVE;
+                remove_pkt.m_id = hit_mon->m_id;
+                remove_broadcast = true;
+
+                int dead_id = hit_mon->m_id;
+
+                // remove_if는 조건에 맞는 애들 앞으로 모아주기 (뒤에는 쓰레기 값) / erase(start, end)는 start부터 end까지 지우기
+                // [] -> 캡처 : 외부 변수 사용 (여기서는 call by value - 참조가 아니라 복사)
+                g_monsters.erase(std::remove_if(g_monsters.begin(), g_monsters.end(), [dead_id](const MONSTER& m) {
+                    return m.m_id == dead_id;
+                    }), g_monsters.end());
+            }
+            else 
+            {
+                hp_pkt.m_size = sizeof(hp_pkt);
+                hp_pkt.m_type = PKT_S2C_MONSTER_HP;
+                hp_pkt.m_id = hit_mon->m_id;
+                hp_pkt.m_hp = hit_mon->m_hp;
+                hit_broadcast = true;
+            }
+        }
+    }       // 몬스터 락 해제
+
+    if (hit_broadcast)
+    {
+        std::lock_guard<std::mutex> player_lock(g_player_lock);
+        for (auto& [id, session] : g_players)
+        {
+            send_packet(&session, &hp_pkt, sizeof(hp_pkt));
+        }
+    } else if (remove_broadcast)
+    {
+        std::lock_guard<std::mutex> player_lock(g_player_lock);
+        for (auto& [id, session] : g_players)
+        {
+            send_packet(&session, &remove_pkt, sizeof(remove_pkt));
         }
     }
 }
@@ -246,9 +355,9 @@ void process_packet(SESSION* p, int bytes_transferred)
 
         switch (header->m_type)     // 실제 처리작업
         {
-        case PKT_C2S_MOVE:
+        case PKT_C2S_PLAYER_MOVE:
         {
-            cs_packet_move* pkt = reinterpret_cast<cs_packet_move*>(ptr);
+            cs_packet_player_move* pkt = reinterpret_cast<cs_packet_player_move*>(ptr);
             p->m_x = pkt->m_x;
             p->m_y = pkt->m_y;
             p->m_z = pkt->m_z;
@@ -257,6 +366,12 @@ void process_packet(SESSION* p, int bytes_transferred)
 
             std::lock_guard<std::mutex> lock(g_console_lock);
             std::cout << "[client " << p->m_id << "] pos = (" << p->m_x << ", " << p->m_y << ", " << p->m_z << ")\n";
+            break;
+        }
+        case PKT_C2S_PLAYER_ATTACK:
+        {
+            cs_packet_player_attack* pkt = reinterpret_cast<cs_packet_player_attack*>(ptr);
+            handle_player_attack(p, pkt);
             break;
         }
         default:
@@ -443,7 +558,7 @@ void spawn_initial_monsters()
     }
 }
 
-void monster_ai_tick()      // 쓰레드가 실행
+void monster_ai_tick()      // 별도 쓰레드가 실행
 {
     while (true) 
     {
