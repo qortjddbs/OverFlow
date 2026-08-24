@@ -3,6 +3,9 @@
 
 AEnemyCharacter::AEnemyCharacter()
 {
+    // 원격으로 스폰되는 인형이라 로컬 입력/컨트롤러 회전을 쓰지 않는다.
+    // 실제 이동/회전은 소유 클라이언트가 아니라
+    // 로컬 플레이어의 NetSyncComponent::InterpolateMonsters()가 대신 SetActorLocation/Rotation 해준다.
     bUseControllerRotationYaw = false;
     GetCharacterMovement()->bOrientRotationToMovement = false;
 }
@@ -10,4 +13,20 @@ AEnemyCharacter::AEnemyCharacter()
 void AEnemyCharacter::BeginPlay()
 {
     Super::BeginPlay();
+    // 원격 스폰 액터는 컨트롤러가 없으므로 별도 초기화 불필요.
+    CurrentHp = MaxHp;
+}
+
+void AEnemyCharacter::OnHpChanged_Implementation(int32 NewHp, int32 PreviousHp)
+{
+    CurrentHp = NewHp;
+    // 기본 구현은 값만 갱신. 피격 이펙트/애니메이션이 필요하면
+    // 블루프린트에서 이 이벤트(OnHpChanged)를 오버라이드해서 추가하면 된다.
+}
+
+void AEnemyCharacter::Die_Implementation()
+{
+    // 기본 구현은 즉시 제거. 사망 연출이 필요하면 블루프린트에서
+    // 이 이벤트(Die)를 오버라이드해서 애니메이션/파티클 재생 후 Destroy Actor를 호출하도록 바꾸면 된다.
+    Destroy();
 }

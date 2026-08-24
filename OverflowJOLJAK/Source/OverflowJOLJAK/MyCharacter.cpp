@@ -1,4 +1,5 @@
 #include "MyCharacter.h"
+#include "WeaponBase.h"
 
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -31,6 +32,18 @@ void AMyCharacter::BeginPlay()
             Subsystem->AddMappingContext(IMC_Link, 0);
         }
     }
+
+    if (WeaponClass)
+    {
+        FActorSpawnParameters Params;
+        Params.Owner = this;   // WeaponBase::Fire()가 Cast<ACharacter>(GetOwner())로 소유자를 찾으므로 필수
+
+        if (AActor* SpawnedWeapon = GetWorld()->SpawnActor<AActor>(WeaponClass, Params))
+        {
+            EquipWeapon(SpawnedWeapon);
+        }
+    }
+
 }
 
 void AMyCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -41,6 +54,7 @@ void AMyCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
     {
         EIC->BindAction(IA_LinkMove, ETriggerEvent::Triggered, this, &AMyCharacter::Move);
         EIC->BindAction(IA_LinkRotate, ETriggerEvent::Triggered, this, &AMyCharacter::Look);
+        EIC->BindAction(IA_Fire, ETriggerEvent::Started, this, &AMyCharacter::Fire);   // 추가
     }
 }
 
@@ -66,4 +80,21 @@ void AMyCharacter::Look(const FInputActionValue& Value)
 
     AddControllerYawInput(LookValue.X);
     AddControllerPitchInput(-LookValue.Y);
+}
+
+void AMyCharacter::EquipWeapon(AActor* WeaponToEquip)
+{
+    if (!WeaponToEquip) return;
+
+    EquippedWeapon = WeaponToEquip;
+
+    EquippedWeapon->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("WeaponSocket_R"));
+}
+
+void AMyCharacter::Fire(const FInputActionValue& Value)
+{
+    if (AWeaponBase* Weapon = Cast<AWeaponBase>(EquippedWeapon))
+    {
+        Weapon->Fire();
+    }
 }

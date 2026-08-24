@@ -7,6 +7,7 @@
 #include "TimerManager.h"
 #include "..\..\Shared\Protocol.h"
 
+#include "EnemyCharacter.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -102,6 +103,25 @@ void UNetSyncComponent::SendToServer(float X, float Y, float Z)
     }
 }
 
+void UNetSyncComponent::SendAttack(int32 TargetMonsterId)
+{
+    if (!Socket)
+    {
+        return;
+    }
+
+    cs_packet_player_attack ap;
+    ap.m_size = sizeof(ap);
+    ap.m_type = PKT_C2S_ATTACK;
+    ap.m_target_monster_id = TargetMonsterId;
+
+    int32 BytesSent = 0;
+    if (!Socket->Send(reinterpret_cast<const uint8*>(&ap), sizeof(ap), BytesSent))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("NetSyncComponent: attack send failed"));
+    }
+}
+
 void UNetSyncComponent::SendPositionTick()
 {
     if (AActor* Owner = GetOwner())
@@ -167,6 +187,41 @@ void UNetSyncComponent::ReceiveFromServer()
             const sc_packet_remove_player* Pkt =
                 reinterpret_cast<const sc_packet_remove_player*>(RecvBuffer.GetData());
             RemovePlayer(Pkt->m_id);
+            break;
+        }
+        case PKT_S2C_MONSTER_SPAWN:
+        {
+            const sc_packet_monster_spawn* Pkt =
+                reinterpret_cast<const sc_packet_monster_spawn*>(RecvBuffer.GetData());
+            AddMonster(Pkt->m_id, Pkt->m_monster_type, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z), Pkt->m_hp);
+            break;
+        }
+        case PKT_S2C_MONSTER_POSITION:
+        {
+            const sc_packet_monster_position* Pkt =
+                reinterpret_cast<const sc_packet_monster_position*>(RecvBuffer.GetData());
+            UpdateMonsterPosition(Pkt->m_id, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z));
+            break;
+        }
+        case PKT_S2C_MONSTER_ATTACK:
+        {
+            const sc_packet_monster_attack* Pkt =
+                reinterpret_cast<const sc_packet_monster_attack*>(RecvBuffer.GetData());
+            HandleMonsterAttack(Pkt->m_id, Pkt->m_target_id);
+            break;
+        }
+        case PKT_S2C_MONSTER_HP:
+        {
+            const sc_packet_monster_hp* Pkt =
+                reinterpret_cast<const sc_packet_monster_hp*>(RecvBuffer.GetData());
+            UpdateMonsterHp(Pkt->m_id, Pkt->m_hp);
+            break;
+        }
+        case PKT_S2C_MONSTER_REMOVE:
+        {
+            const sc_packet_monster_remove* Pkt =
+                reinterpret_cast<const sc_packet_monster_remove*>(RecvBuffer.GetData());
+            RemoveMonster(Pkt->m_id);
             break;
         }
 
@@ -252,6 +307,103 @@ void UNetSyncComponent::RemovePlayer(int32 Id)
     }
 }
 
+void UNetSyncComponent::AddMonster(int32 Id, uint8 MonsterType, const FVector& Location, int32 Hp)
+{
+    if (Monsters.Contains(Id)) return;   // 이미 스폰된 몬스터면 중복 스폰 방지 (재접속 시 스폰 패킷 다시 받는 경우 등)
+
+    int32 VisualIndex = MonsterType;
+    if (!MonsterVisualClasses.IsValidIndex(VisualIndex))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("NetSync: monster type %d not registered, using 0"), MonsterType);
+        VisualIndex = 0;
+    }
+    if (!MonsterVisualClasses.IsValidIndex(VisualIndex) || !MonsterVisualClasses[VisualIndex])
+    {
+        UE_LOG(LogTemp, Error, TEXT("NetSync: MonsterVisualClasses is empty. Set it in the editor."));
+        return;
+    }
+
+    FActorSpawnParameters Params;
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    AActor* NewActor = GetWorld()->SpawnActor<AActor>(
+        MonsterVisualClasses[VisualIndex], Location, FRotator::ZeroRotator, Params);
+
+    if (NewActor)
+    {
+        Monsters.Add(Id, NewActor);
+        MonsterTargetLocations.Add(Id, Location);
+
+        // 스폰된 액터가 AEnemyCharacter라면 서버 id와 초기 HP를 심어준다.
+        // (공격할 때 어떤 몬스터인지, HP 갱신 이벤트를 어디로 보낼지 이걸로 찾는다)
+        if (AEnemyCharacter* Enemy = Cast<AEnemyCharacter>(NewActor))
+        {
+            Enemy->EnemyId = Id;
+            Enemy->MaxHp = Hp;
+            Enemy->CurrentHp = Hp;
+        }
+
+        UE_LOG(LogTemp, Log, TEXT("NetSync: monster %d spawned (type %d, hp %d)"), Id, MonsterType, Hp);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("NetSync: SpawnActor FAILED for monster %d"), Id);
+    }
+}
+
+void UNetSyncComponent::UpdateMonsterPosition(int32 Id, const FVector& Location)
+{
+    // ADD보다 POSITION이 먼저 오는 경우와 동일하게, 스폰이 아직 안 된 몬스터면 그냥 버린다.
+    if (Monsters.Contains(Id))
+    {
+        MonsterTargetLocations.Add(Id, Location);
+    }
+}
+
+void UNetSyncComponent::UpdateMonsterHp(int32 Id, int32 NewHp)
+{
+    if (AActor** Found = Monsters.Find(Id))
+    {
+        if (AEnemyCharacter* Enemy = Cast<AEnemyCharacter>(*Found))
+        {
+            const int32 PreviousHp = Enemy->CurrentHp;
+            Enemy->OnHpChanged(NewHp, PreviousHp);
+        }
+    }
+}
+
+void UNetSyncComponent::RemoveMonster(int32 Id)
+{
+    if (AActor** Found = Monsters.Find(Id))
+    {
+        if (IsValid(*Found))
+        {
+            if (AEnemyCharacter* Enemy = Cast<AEnemyCharacter>(*Found))
+            {
+                // 사망 연출(애니메이션/파티클)과 실제 Destroy 타이밍은
+                // AEnemyCharacter::Die 쪽(블루프린트에서 오버라이드 가능)에 맡긴다.
+                Enemy->Die();
+            }
+            else
+            {
+                (*Found)->Destroy();
+            }
+        }
+
+        Monsters.Remove(Id);
+        MonsterTargetLocations.Remove(Id);
+        UE_LOG(LogTemp, Log, TEXT("NetSync: monster %d removed (died)"), Id);
+    }
+}
+
+void UNetSyncComponent::HandleMonsterAttack(int32 MonsterId, int32 TargetPlayerId)
+{
+    // 실제 애니메이션/이펙트/피격 반응은 이 델리게이트를 구독하는 쪽(Blueprint 등)에서 처리.
+    OnMonsterAttack.Broadcast(MonsterId, TargetPlayerId);
+
+    UE_LOG(LogTemp, Log, TEXT("NetSync: monster %d attacked player %d"), MonsterId, TargetPlayerId);
+}
+
 void UNetSyncComponent::InterpolateRemotePlayers(float DeltaTime)
 {
     for (const TPair<int32, FVector>& Pair : TargetLocations)
@@ -281,6 +433,41 @@ void UNetSyncComponent::InterpolateRemotePlayers(float DeltaTime)
                 NewRot.Pitch = 0.0f;
                 NewRot.Roll = 0.0f;
                 RemoteChar->SetActorRotation(NewRot);
+            }
+        }
+    }
+}
+
+void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
+{
+    // 로직은 InterpolateRemotePlayers와 동일하다 (몬스터도 결국 "서버가 보내주는 좌표를 따라가는 인형").
+    for (const TPair<int32, FVector>& Pair : MonsterTargetLocations)
+    {
+        AActor** Found = Monsters.Find(Pair.Key);
+        if (!Found || !IsValid(*Found))
+        {
+            continue;
+        }
+
+        const FVector Current = (*Found)->GetActorLocation();
+        const FVector Next = FMath::VInterpTo(Current, Pair.Value, DeltaTime, MonsterInterpSpeed);
+        (*Found)->SetActorLocation(Next);
+
+        const FVector Velocity = (Next - Current) / DeltaTime;
+
+        if (ACharacter* MonsterChar = Cast<ACharacter>(*Found))
+        {
+            if (UCharacterMovementComponent* Move = MonsterChar->GetCharacterMovement())
+            {
+                Move->Velocity = Velocity;
+            }
+
+            if (!Velocity.IsNearlyZero(1.0f))
+            {
+                FRotator NewRot = Velocity.Rotation();
+                NewRot.Pitch = 0.0f;
+                NewRot.Roll = 0.0f;
+                MonsterChar->SetActorRotation(NewRot);
             }
         }
     }
