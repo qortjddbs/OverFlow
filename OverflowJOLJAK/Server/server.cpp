@@ -30,7 +30,7 @@ constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 // 몬스터 초기 좌표
 constexpr float MONSTER_SPAWN_POSITION_X = 0.f;
 constexpr float MONSTER_SPAWN_POSITION_Y = 0.f;
-constexpr float MONSTER_SPAWN_POSITION_Z = 0.f;
+constexpr float MONSTER_SPAWN_POSITION_Z = 1000.f;
 
 constexpr float MONSTER_SPAWN_MIN_RADIUS = 300.f;
 constexpr float MONSTER_SPAWN_MAX_RADIUS = 1500.f;
@@ -428,13 +428,13 @@ void spawn_initial_monsters()
 {
     for (int i = 0; i < 10; ++i)
     {
-        float angle = static_cast<float>(rand()) / RAND_MAX * 2.f * 3.14159265f;
-        float radian = MONSTER_SPAWN_MIN_RADIUS + static_cast<float>(rand()) / RAND_MAX * (MONSTER_SPAWN_MAX_RADIUS - MONSTER_SPAWN_MIN_RADIUS);
+        float angle = static_cast<float>(rand()) / RAND_MAX * 2.f * 3.14159265f;            // 랜덤한 각도 구하기
+        float radius = MONSTER_SPAWN_MIN_RADIUS + static_cast<float>(rand()) / RAND_MAX * (MONSTER_SPAWN_MAX_RADIUS - MONSTER_SPAWN_MIN_RADIUS);        // 랜덤한 반지름 구하기
 
         MONSTER m;
         m.m_id = i + 1;
-        m.m_x = MONSTER_SPAWN_POSITION_X;
-        m.m_y = MONSTER_SPAWN_POSITION_Y;
+        m.m_x = MONSTER_SPAWN_POSITION_X + radius * cosf(angle);
+        m.m_y = MONSTER_SPAWN_POSITION_Y + radius + sinf(angle);
         m.m_z = MONSTER_SPAWN_POSITION_Z;
         m.m_monster_type = 0;
         m.m_hp = 100;
