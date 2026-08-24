@@ -39,6 +39,35 @@ struct sc_packet_monster_spawn : PACKET_HEADER      // 3 + 21바이트
     float m_x, m_y, m_z;
     int m_hp;
 };
+
+struct sc_packet_monster_position : PACKET_HEADER   // 3 + 16바이트
+{
+    int m_id;
+    float m_x, m_y, m_z;
+};
+
+struct sc_packet_monster_attack : PACKET_HEADER     // 3 + 8바이트
+{
+    int m_id;
+    int m_target_id;
+};
+
+struct cs_packet_player_attack : PACKET_HEADER      // 3 + 4바이트
+{
+    int m_target_monster_id;
+};
+
+struct sc_packet_monster_hp : PACKET_HEADER         // 3 + 8바이트
+{
+    int m_id;
+    int m_hp;
+};
+
+struct sc_packet_monster_remove : PACKET_HEADER     // 3 + 4바이트
+{
+    int m_id;
+};
+
 #pragma pack(pop)   // 여기까지만 적용
 
 enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가기 때문에 타입(크기) 명시
@@ -47,5 +76,10 @@ enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가�
     PKT_S2C_ADD_PLAYER = 2,
     PKT_S2C_POSITION = 3,
     PKT_S2C_REMOVE_PLAYER = 4,
-    PKT_S2C_MONSTER_SPAWN = 5
+    PKT_S2C_MONSTER_SPAWN = 5,
+    PKT_S2C_MONSTER_POSITION = 6,
+    PKT_S2C_MONSTER_ATTACK = 7,
+    PKT_C2S_ATTACK = 8,
+    PKT_S2C_MONSTER_HP = 9,
+    PKT_S2C_MONSTER_REMOVE = 10
 };
