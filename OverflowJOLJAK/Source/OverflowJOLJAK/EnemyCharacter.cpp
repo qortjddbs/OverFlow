@@ -3,9 +3,8 @@
 
 AEnemyCharacter::AEnemyCharacter()
 {
-    // 원격으로 스폰되는 인형이라 로컬 입력/컨트롤러 회전을 쓰지 않는다.
-    // 실제 이동/회전은 소유 클라이언트가 아니라
-    // 로컬 플레이어의 NetSyncComponent::InterpolateMonsters()가 대신 SetActorLocation/Rotation 해준다.
+    AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
+
     bUseControllerRotationYaw = false;
     GetCharacterMovement()->bOrientRotationToMovement = false;
 }

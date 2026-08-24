@@ -241,6 +241,7 @@ void UNetSyncComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 
     ReceiveFromServer();
     InterpolateRemotePlayers(DeltaTime);
+    InterpolateMonsters(DeltaTime);
 }
 
 void UNetSyncComponent::AddPlayer(int32 Id, int32 Visual, const FVector& Location)
@@ -344,6 +345,7 @@ void UNetSyncComponent::AddMonster(int32 Id, uint8 MonsterType, const FVector& L
         }
 
         UE_LOG(LogTemp, Log, TEXT("NetSync: monster %d spawned (type %d, hp %d)"), Id, MonsterType, Hp);
+        UE_LOG(LogTemp, Log, TEXT("NetSync: monster %f, %f, %f"), Location.X, Location.Y, Location.Z);
     }
     else
     {
@@ -382,7 +384,7 @@ void UNetSyncComponent::RemoveMonster(int32 Id)
             {
                 // 사망 연출(애니메이션/파티클)과 실제 Destroy 타이밍은
                 // AEnemyCharacter::Die 쪽(블루프린트에서 오버라이드 가능)에 맡긴다.
-                Enemy->Die();
+                Enemy->Die_Implementation();
             }
             else
             {
@@ -440,7 +442,6 @@ void UNetSyncComponent::InterpolateRemotePlayers(float DeltaTime)
 
 void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
 {
-    // 로직은 InterpolateRemotePlayers와 동일하다 (몬스터도 결국 "서버가 보내주는 좌표를 따라가는 인형").
     for (const TPair<int32, FVector>& Pair : MonsterTargetLocations)
     {
         AActor** Found = Monsters.Find(Pair.Key);
@@ -449,26 +450,28 @@ void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
             continue;
         }
 
-        const FVector Current = (*Found)->GetActorLocation();
-        const FVector Next = FMath::VInterpTo(Current, Pair.Value, DeltaTime, MonsterInterpSpeed);
-        (*Found)->SetActorLocation(Next);
-
-        const FVector Velocity = (Next - Current) / DeltaTime;
-
-        if (ACharacter* MonsterChar = Cast<ACharacter>(*Found))
+        ACharacter* MonsterChar = Cast<ACharacter>(*Found);
+        if (!MonsterChar)
         {
-            if (UCharacterMovementComponent* Move = MonsterChar->GetCharacterMovement())
-            {
-                Move->Velocity = Velocity;
-            }
+            continue;
+        }
 
-            if (!Velocity.IsNearlyZero(1.0f))
-            {
-                FRotator NewRot = Velocity.Rotation();
-                NewRot.Pitch = 0.0f;
-                NewRot.Roll = 0.0f;
-                MonsterChar->SetActorRotation(NewRot);
-            }
+        const FVector Current = MonsterChar->GetActorLocation();
+
+        // 수평 방향만 계산 (Z는 무브먼트 컴포넌트의 중력이 담당)
+        FVector ToTarget = Pair.Value - Current;
+        ToTarget.Z = 0.f;
+
+        // 목표에 충분히 가까우면 이동 입력 안 줌 (도착 지점에서 떨림 방지)
+        if (ToTarget.SizeSquared() > 100.f)   // 10유닛 이상 떨어졌을 때만
+        {
+            const FVector Direction = ToTarget.GetSafeNormal();
+            MonsterChar->AddMovementInput(Direction, 1.0f);
+
+            FRotator NewRot = Direction.Rotation();
+            NewRot.Pitch = 0.f;
+            NewRot.Roll = 0.f;
+            MonsterChar->SetActorRotation(NewRot);
         }
     }
 }
