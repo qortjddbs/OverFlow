@@ -9,6 +9,11 @@ AEnemyCharacter::AEnemyCharacter()
     GetCharacterMovement()->bOrientRotationToMovement = false;
 }
 
+void AEnemyCharacter::OnAttack_Implementation(int32 TargetPlayerId)
+{
+
+}
+
 void AEnemyCharacter::BeginPlay()
 {
     Super::BeginPlay();

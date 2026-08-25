@@ -54,6 +54,7 @@ struct sc_packet_monster_attack : PACKET_HEADER     // 3 + 8바이트
 
 struct cs_packet_player_attack : PACKET_HEADER      // 3 + 24바이트
 {
+    int m_target_monster_id; // 추가
     float m_origin_x, m_origin_y, m_origin_z;   // 발사 원점
     float m_dir_x, m_dir_y, m_dir_z;            // 발사 방향
 };
@@ -69,6 +70,19 @@ struct sc_packet_monster_remove : PACKET_HEADER     // 3 + 4바이트
     int m_id;
 };
 
+struct cs_packet_player_fire : PACKET_HEADER        // 3 + 24바이트
+{
+    float m_muzzle_x, m_muzzle_y, m_muzzle_z;
+    float m_dir_x, m_dir_y, m_dir_z;
+};
+
+struct sc_packet_player_fire : PACKET_HEADER        // 3 + 28바이트
+{
+    int m_shooter_id;
+    float m_muzzle_x, m_muzzle_y, m_muzzle_z;
+    float m_dir_x, m_dir_y, m_dir_z;
+};
+
 #pragma pack(pop)   // 여기까지만 적용
 
 enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가기 때문에 타입(크기) 명시
@@ -82,5 +96,7 @@ enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가�
     PKT_S2C_MONSTER_ATTACK = 7,
     PKT_C2S_PLAYER_ATTACK = 8,
     PKT_S2C_MONSTER_HP = 9,
-    PKT_S2C_MONSTER_REMOVE = 10
+    PKT_S2C_MONSTER_REMOVE = 10,
+    PKT_C2S_FIRE = 11,
+    PKT_S2C_PLAYER_FIRE = 12
 };

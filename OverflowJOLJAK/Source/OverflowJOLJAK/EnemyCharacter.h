@@ -43,6 +43,12 @@ public:
     void Die();
     virtual void Die_Implementation();
 
+    // 이 몬스터가 공격을 실행했을 때 호출됨. 블루프린트에서 오버라이드해서
+    // 공격 애니메이션 몽타주를 재생하면 된다.
+    UFUNCTION(BlueprintNativeEvent, Category = "Enemy")
+    void OnAttack(int32 TargetPlayerId);
+    virtual void OnAttack_Implementation(int32 TargetPlayerId);
+
 protected:
     virtual void BeginPlay() override;
 };

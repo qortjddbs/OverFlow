@@ -6,6 +6,8 @@
 
 class FSocket;
 
+class AProjectile;
+
 // 몬스터가 공격을 실행했을 때 브로드캐스트되는 델리게이트.
 // AEnemyCharacter나 플레이어 쪽에서 바인딩해서 공격 애니메이션/이펙트/피격 반응 등을 처리하면 된다.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMonsterAttack, int32, MonsterId, int32, TargetPlayerId);
@@ -47,6 +49,12 @@ public:
     /** 내 캐릭터가 특정 몬스터를 공격했다고 서버에 알린다. 실제 데미지/사거리 판정은 서버가 함. */
     UFUNCTION(BlueprintCallable, Category = "NetSync")
     void SendAttack(int32 TargetMonsterId);
+
+    UFUNCTION(BlueprintCallable, Category = "NetSync")
+    void SendFireEvent(const FVector& MuzzleLocation, const FVector& Direction);
+
+    UPROPERTY(EditAnywhere, Category = "NetSync")
+    TSubclassOf<AProjectile> RemoteFireProjectileClass;
 
 protected:
     virtual void BeginPlay() override;
@@ -94,4 +102,6 @@ private:
 
     void InterpolateRemotePlayers(float DeltaTime);
     void InterpolateMonsters(float DeltaTime);
+
+    void SpawnRemoteFireCosmetic(const FVector& MuzzleLocation, const FVector& Direction);
 };

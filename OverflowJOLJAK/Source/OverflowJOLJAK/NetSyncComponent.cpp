@@ -11,6 +11,8 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
+#include "Projectile.h"
+
 UNetSyncComponent::UNetSyncComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
@@ -89,9 +91,9 @@ void UNetSyncComponent::SendToServer(float X, float Y, float Z)
         return;
     }
 
-    cs_packet_move mp;
+    cs_packet_player_move mp;
     mp.m_size = sizeof(mp);
-    mp.m_type = PKT_C2S_MOVE;
+    mp.m_type = PKT_C2S_PLAYER_MOVE;
     mp.m_x = X;
     mp.m_y = Y;
     mp.m_z = Z;
@@ -112,13 +114,39 @@ void UNetSyncComponent::SendAttack(int32 TargetMonsterId)
 
     cs_packet_player_attack ap;
     ap.m_size = sizeof(ap);
-    ap.m_type = PKT_C2S_ATTACK;
+    ap.m_type = PKT_C2S_PLAYER_ATTACK;
     ap.m_target_monster_id = TargetMonsterId;
 
     int32 BytesSent = 0;
     if (!Socket->Send(reinterpret_cast<const uint8*>(&ap), sizeof(ap), BytesSent))
     {
         UE_LOG(LogTemp, Warning, TEXT("NetSyncComponent: attack send failed"));
+    }
+}
+
+void UNetSyncComponent::SendFireEvent(const FVector& MuzzleLocation, const FVector& Direction)
+{
+    if (!Socket)
+    {
+        return;
+    }
+
+    const FVector NormalizedDir = Direction.GetSafeNormal();
+
+    cs_packet_player_fire fp;
+    fp.m_size = sizeof(fp);
+    fp.m_type = PKT_C2S_FIRE;
+    fp.m_muzzle_x = MuzzleLocation.X;
+    fp.m_muzzle_y = MuzzleLocation.Y;
+    fp.m_muzzle_z = MuzzleLocation.Z;
+    fp.m_dir_x = NormalizedDir.X;
+    fp.m_dir_y = NormalizedDir.Y;
+    fp.m_dir_z = NormalizedDir.Z;
+
+    int32 BytesSent = 0;
+    if (!Socket->Send(reinterpret_cast<const uint8*>(&fp), sizeof(fp), BytesSent))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("NetSyncComponent: fire event send failed"));
     }
 }
 
@@ -175,10 +203,10 @@ void UNetSyncComponent::ReceiveFromServer()
             AddPlayer(Pkt->m_id, Pkt->m_visual, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z));
             break;
         }
-        case PKT_S2C_POSITION:
+        case PKT_S2C_PLAYER_POSITION:
         {
-            const sc_packet_position* Pkt =
-                reinterpret_cast<const sc_packet_position*>(RecvBuffer.GetData());
+            const sc_packet_player_position* Pkt =
+                reinterpret_cast<const sc_packet_player_position*>(RecvBuffer.GetData());
             UpdatePosition(Pkt->m_id, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z));
             break;
         }
@@ -222,6 +250,15 @@ void UNetSyncComponent::ReceiveFromServer()
             const sc_packet_monster_remove* Pkt =
                 reinterpret_cast<const sc_packet_monster_remove*>(RecvBuffer.GetData());
             RemoveMonster(Pkt->m_id);
+            break;
+        }
+        case PKT_S2C_PLAYER_FIRE:
+        {
+            const sc_packet_player_fire* Pkt =
+                reinterpret_cast<const sc_packet_player_fire*>(RecvBuffer.GetData());
+            SpawnRemoteFireCosmetic(
+                FVector(Pkt->m_muzzle_x, Pkt->m_muzzle_y, Pkt->m_muzzle_z),
+                FVector(Pkt->m_dir_x, Pkt->m_dir_y, Pkt->m_dir_z));
             break;
         }
 
@@ -403,6 +440,15 @@ void UNetSyncComponent::HandleMonsterAttack(int32 MonsterId, int32 TargetPlayerI
     // 실제 애니메이션/이펙트/피격 반응은 이 델리게이트를 구독하는 쪽(Blueprint 등)에서 처리.
     OnMonsterAttack.Broadcast(MonsterId, TargetPlayerId);
 
+    // 해당 몬스터 인스턴스를 찾아서 공격 이벤트 직접 호출 -> 애니메이션 재생
+    if (AActor** Found = Monsters.Find(MonsterId))
+    {
+        if (AEnemyCharacter* Enemy = Cast<AEnemyCharacter>(*Found))
+        {
+            Enemy->OnAttack(TargetPlayerId);
+        }
+    }
+
     UE_LOG(LogTemp, Log, TEXT("NetSync: monster %d attacked player %d"), MonsterId, TargetPlayerId);
 }
 
@@ -474,4 +520,21 @@ void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
             MonsterChar->SetActorRotation(NewRot);
         }
     }
+}
+
+void UNetSyncComponent::SpawnRemoteFireCosmetic(const FVector& MuzzleLocation, const FVector& Direction)
+{
+    if (!RemoteFireProjectileClass)
+    {
+        return;
+    }
+
+    FActorSpawnParameters Params;
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    AProjectile* Cosmetic = GetWorld()->SpawnActor<AProjectile>(
+        RemoteFireProjectileClass, MuzzleLocation, Direction.Rotation(), Params);
+
+    // ShooterCharacter를 일부러 안 채운다 - 이 연출용 총알은 무엇에 맞아도
+    // 서버에 공격 보고를 하지 않는다 (원래 쏜 사람이 이미 보고했으므로 중복 방지).
 }

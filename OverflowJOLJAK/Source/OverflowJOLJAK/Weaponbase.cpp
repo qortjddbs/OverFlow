@@ -1,6 +1,7 @@
 #include "WeaponBase.h"
 
 #include "Projectile.h"
+#include "NetSyncComponent.h"
 
 #include "Camera/CameraComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -149,6 +150,12 @@ void AWeaponBase::Fire()
     {
         // 총알이 자기 자신에게 맞는 걸 막고, 맞았을 때 서버에 보고할 경로를 알려준다.
         Bullet->ShooterCharacter = OwnerChar;
+    }
+
+    // 다른 플레이어들도 이 총알을 볼 수 있게 발사 사실을 서버에 알린다 (순수 연출용 - 데미지 판정과 무관).
+    if (UNetSyncComponent* NetSync = OwnerChar->FindComponentByClass<UNetSyncComponent>())
+    {
+        NetSync->SendFireEvent(MuzzleLocation, FireDirection);
     }
 
     OnFireEffects(MuzzleLocation, TargetPoint);
