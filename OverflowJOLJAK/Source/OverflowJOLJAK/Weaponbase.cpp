@@ -156,6 +156,7 @@ void AWeaponBase::Fire()
     if (UNetSyncComponent* NetSync = OwnerChar->FindComponentByClass<UNetSyncComponent>())
     {
         NetSync->SendFireEvent(MuzzleLocation, FireDirection);
+        NetSync->SendAttack(MuzzleLocation, FireDirection);
     }
 
     OnFireEffects(MuzzleLocation, TargetPoint);

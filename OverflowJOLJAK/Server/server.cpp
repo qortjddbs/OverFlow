@@ -43,7 +43,11 @@ constexpr float MONSTER_ATTACK_RANGE = 100.f;
 constexpr float MONSTER_ATTACK_COOL = 1.f;
 constexpr int MONSTER_HEARTBEAT = 100;
 constexpr float MONSTER_MOVE_SPEED = 10.f;
-constexpr float MONSTER_HIT_RADIUS = 34.f;      // 몬스터 중심으로부터 히트박스(구) 반지름 길이
+//constexpr float MONSTER_HIT_RADIUS = 34.f;      // 몬스터 중심으로부터 히트박스(구) 반지름 길이
+
+constexpr float MONSTER_HIT_RADIUS = 60.f;   // 몸통 반지름 (X,Y 조준 허용 오차). 슬라임 크기에 맞게.
+constexpr float MONSTER_HIT_HEIGHT = 2000.f;  // 판정 기둥 높이. 서버-클라 Z 오차 흡수용으로 넉넉히.
+constexpr float MONSTER_HIT_Z_MARGIN = 1000.f;  // 기둥을 몬스터 z에서 아래로 얼마나 더 내릴지 (여유).
 
 enum enumOperation      // 얘는 내부에서만 쓰이는 값이라 따로 명시하지 않음
 {
@@ -281,7 +285,12 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
             float ddx = mon.m_x - px;
             float ddy = mon.m_y - py;
             float ddz = mon.m_z - pz;
-            float dist = sqrtf(ddx * ddx + ddy * ddy + ddz * ddz);
+            //float dist = sqrtf(ddx * ddx + ddy * ddy + ddz * ddz);
+            //float dist = sqrtf((mon.m_x - pkt->m_origin_x) * (mon.m_x - pkt->m_origin_x) + (mon.m_y - pkt->m_origin_y) * (mon.m_y - pkt->m_origin_y));
+            float dist = fabsf((mon.m_y - pkt->m_origin_y) * nx - (mon.m_x - pkt->m_origin_x) * ny);
+
+            std::cout << "  monster " << mon.m_id << " dist=" << dist << " (radius=" << MONSTER_HIT_RADIUS << ")\n";   // 임시
+            std::cout << "  monster " << mon.m_id << " pos=(" << mon.m_x << "," << mon.m_y << "," << mon.m_z << ") dist=" << dist << "\n";
 
             if (dist <= MONSTER_HIT_RADIUS && t < closest_t)
             {
@@ -293,6 +302,7 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
         if (hit_mon != nullptr)
         {
             hit_mon->m_hp -= PLAYER_ATTACK_DAMAGE;
+            std::cout << "monster " << hit_mon->m_id << " hp=" << hit_mon->m_hp << "\n";
 
             if (hit_mon->m_hp <= 0)
             {
@@ -365,12 +375,14 @@ void process_packet(SESSION* p, int bytes_transferred)
             update_position(p);
 
             std::lock_guard<std::mutex> lock(g_console_lock);
-            std::cout << "[client " << p->m_id << "] pos = (" << p->m_x << ", " << p->m_y << ", " << p->m_z << ")\n";
+            //std::cout << "[client " << p->m_id << "] pos = (" << p->m_x << ", " << p->m_y << ", " << p->m_z << ")\n";
             break;
         }
         case PKT_C2S_PLAYER_ATTACK:
         {
             cs_packet_player_attack* pkt = reinterpret_cast<cs_packet_player_attack*>(ptr);
+             std::cout << "[attack pkt] origin=(" << pkt->m_origin_x << "," << pkt->m_origin_y << "," << pkt->m_origin_z
+               << ") dir=(" << pkt->m_dir_x << "," << pkt->m_dir_y << "," << pkt->m_dir_z << ")\n";   // 임시
             handle_player_attack(p, pkt);
             break;
         }

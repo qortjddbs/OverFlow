@@ -105,17 +105,25 @@ void UNetSyncComponent::SendToServer(float X, float Y, float Z)
     }
 }
 
-void UNetSyncComponent::SendAttack(int32 TargetMonsterId)
+void UNetSyncComponent::SendAttack(const FVector& Origin, const FVector& Direction)
 {
     if (!Socket)
     {
         return;
     }
 
+    const FVector Dir = Direction.GetSafeNormal();
+
     cs_packet_player_attack ap;
     ap.m_size = sizeof(ap);
     ap.m_type = PKT_C2S_PLAYER_ATTACK;
-    ap.m_target_monster_id = TargetMonsterId;
+    ap.m_target_monster_id = -1;   // 서버가 안 쓰지만 구조체에 남아있으니 채워둠
+    ap.m_origin_x = Origin.X;
+    ap.m_origin_y = Origin.Y;
+    ap.m_origin_z = Origin.Z;
+    ap.m_dir_x = Dir.X;
+    ap.m_dir_y = Dir.Y;
+    ap.m_dir_z = Dir.Z;
 
     int32 BytesSent = 0;
     if (!Socket->Send(reinterpret_cast<const uint8*>(&ap), sizeof(ap), BytesSent))

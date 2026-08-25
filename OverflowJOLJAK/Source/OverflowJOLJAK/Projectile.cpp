@@ -58,18 +58,24 @@ void AProjectile::OnHit(UPrimitiveComponent* HitComp, AActor* OtherActor, UPrimi
     // 피격 연출은 무엇에 맞았든 재생 (벽에 맞아도 스파크는 나와야 하니까)
     OnProjectileHit(Hit.ImpactPoint, OtherActor);
 
-    // 지금은 몬스터만 데미지 대상. 벽/다른 플레이어를 맞혔으면 총알만 사라진다.
-    if (AEnemyCharacter* HitEnemy = Cast<AEnemyCharacter>(OtherActor))
-    {
-        if (ShooterCharacter)
-        {
-            if (UNetSyncComponent* NetSync = ShooterCharacter->FindComponentByClass<UNetSyncComponent>())
-            {
-                NetSync->SendAttack(HitEnemy->EnemyId);
-                UE_LOG(LogTemp, Log, TEXT("Projectile hit enemy %d, reported to server"), HitEnemy->EnemyId);
-            }
-        }
-    }
+    //===============================================================================
+    // 총알 계산을 클라에서 할경우
+    //// 지금은 몬스터만 데미지 대상. 벽/다른 플레이어를 맞혔으면 총알만 사라진다.
+    //if (AEnemyCharacter* HitEnemy = Cast<AEnemyCharacter>(OtherActor))
+    //{
+    //    if (ShooterCharacter)
+    //    {
+    //        if (UNetSyncComponent* NetSync = ShooterCharacter->FindComponentByClass<UNetSyncComponent>())
+    //        {
+    //            // 총알이 태어난 위치(발사 원점)와 진행 방향을 같이 보낸다
+    //            const FVector Origin = GetActorLocation();          // 맞은 지점 근처지만, 원점 개념으로 충분
+    //            const FVector Direction = GetVelocity().GetSafeNormal();
+    //            NetSync->SendAttack(HitEnemy->EnemyId, Origin, Direction);
+    //            UE_LOG(LogTemp, Log, TEXT("Projectile hit enemy %d, reported to server"), HitEnemy->EnemyId);
+    //        }
+    //    }
+    //}
+    //===============================================================================
 
     Destroy();
 }

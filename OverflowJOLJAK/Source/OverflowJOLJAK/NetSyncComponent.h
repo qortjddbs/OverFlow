@@ -48,7 +48,7 @@ public:
 
     /** 내 캐릭터가 특정 몬스터를 공격했다고 서버에 알린다. 실제 데미지/사거리 판정은 서버가 함. */
     UFUNCTION(BlueprintCallable, Category = "NetSync")
-    void SendAttack(int32 TargetMonsterId);
+    void SendAttack(const FVector& Origin, const FVector& Direction);
 
     UFUNCTION(BlueprintCallable, Category = "NetSync")
     void SendFireEvent(const FVector& MuzzleLocation, const FVector& Direction);
