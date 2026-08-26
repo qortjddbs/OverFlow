@@ -453,6 +453,12 @@ void UNetSyncComponent::HandleMonsterAttack(int32 MonsterId, int32 TargetPlayerI
     {
         if (AEnemyCharacter* Enemy = Cast<AEnemyCharacter>(*Found))
         {
+            if (Enemy->CurrentHp <= 0)
+            {
+                Enemy->Die();   // 이미 죽은 몬스터가 공격 이벤트를 받으면 그냥 Die() 호출
+                return;
+            }
+
             Enemy->OnAttack(TargetPlayerId);
         }
     }
