@@ -111,6 +111,8 @@ std::unordered_map<int, SESSION> g_players;   // key = client id
 std::mutex g_monster_lock;
 std::vector <MONSTER> g_monsters;
 
+std::vector<std::pair<int, std::chrono::steady_clock::time_point>> g_pending_respawn;
+
 std::mutex g_console_lock;                  // cout/cerr이 여러 스레드에서 섞이지 않게
 
 void error_display(const char* msg, int err_no)
@@ -237,6 +239,7 @@ void update_position(SESSION* me)
 
 void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // 공격 판정
 {
+
     float dx = pkt->m_dir_x;
     float dy = pkt->m_dir_y;
     float dz = pkt->m_dir_z;
@@ -292,6 +295,8 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
             std::cout << "  monster " << mon.m_id << " dist=" << dist << " (radius=" << MONSTER_HIT_RADIUS << ")\n";   // 임시
             std::cout << "  monster " << mon.m_id << " pos=(" << mon.m_x << "," << mon.m_y << "," << mon.m_z << ") dist=" << dist << "\n";
 
+
+            std::cout << "monster " << mon.m_id << " t=" << t << "\n";
             if (dist <= MONSTER_HIT_RADIUS && t < closest_t)
             {
                 closest_t = t;
@@ -318,6 +323,7 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
                 g_monsters.erase(std::remove_if(g_monsters.begin(), g_monsters.end(), [dead_id](const MONSTER& m) {
                     return m.m_id == dead_id;
                     }), g_monsters.end());
+                g_pending_respawn.push_back({ dead_id, std::chrono::steady_clock::now() + std::chrono::seconds(10) });
             }
             else 
             {
@@ -578,6 +584,32 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
         {
             std::lock_guard<std::mutex> player_lock(g_player_lock);        // 항상 플레이어 락 먼저
             std::lock_guard<std::mutex> monster_lock(g_monster_lock);       // 그 다음 몬스터 락 (데드락 방지)
+
+            auto now2 = std::chrono::steady_clock::now();
+            for (auto it = g_pending_respawn.begin(); it != g_pending_respawn.end(); )
+            {
+                if (now2 >= it->second)
+                {
+                    float angle = static_cast<float>(rand()) / RAND_MAX * 2.f * 3.14159265f;
+                    float radius = MONSTER_SPAWN_MIN_RADIUS + static_cast<float>(rand()) / RAND_MAX * (MONSTER_SPAWN_MAX_RADIUS - MONSTER_SPAWN_MIN_RADIUS);
+
+                    MONSTER m;
+                    m.m_id = it->first;
+                    m.m_x = MONSTER_SPAWN_POSITION_X + radius * cosf(angle);
+                    m.m_y = MONSTER_SPAWN_POSITION_Y + radius * sinf(angle);
+                    m.m_z = MONSTER_SPAWN_POSITION_Z;
+                    m.m_hp = 100;
+                    g_monsters.push_back(m);
+
+                    sc_packet_monster_spawn sp{};
+                    sp.m_size = sizeof(sp); sp.m_type = PKT_S2C_MONSTER_SPAWN;
+                    sp.m_id = m.m_id; sp.m_x = m.m_x; sp.m_y = m.m_y; sp.m_z = m.m_z; sp.m_hp = m.m_hp;
+                    for (auto& [id, session] : g_players) send_packet(&session, &sp, sizeof(sp));
+
+                    it = g_pending_respawn.erase(it);
+                }
+                else ++it;
+            }
 
             for (auto& mon : g_monsters) 
             {

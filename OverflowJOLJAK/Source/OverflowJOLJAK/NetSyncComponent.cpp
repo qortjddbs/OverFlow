@@ -429,7 +429,7 @@ void UNetSyncComponent::RemoveMonster(int32 Id)
             {
                 // 사망 연출(애니메이션/파티클)과 실제 Destroy 타이밍은
                 // AEnemyCharacter::Die 쪽(블루프린트에서 오버라이드 가능)에 맡긴다.
-                Enemy->Die_Implementation();
+                Enemy->Die();
             }
             else
             {
