@@ -84,7 +84,7 @@ void UNetSyncComponent::ConnectToServer()
     }
 }
 
-void UNetSyncComponent::SendToServer(float X, float Y, float Z)
+void UNetSyncComponent::SendToServer(float X, float Y, float Z, float Pitch, float Yaw, float Roll)
 {
     if (!Socket)
     {
@@ -97,6 +97,9 @@ void UNetSyncComponent::SendToServer(float X, float Y, float Z)
     mp.m_x = X;
     mp.m_y = Y;
     mp.m_z = Z;
+    mp.m_pitch = Pitch;
+    mp.m_yaw = Yaw;
+    mp.m_roll = Roll;
 
     int32 BytesSent = 0;
     if (!Socket->Send(reinterpret_cast<const uint8*>(&mp), sizeof(mp), BytesSent))
@@ -163,7 +166,8 @@ void UNetSyncComponent::SendPositionTick()
     if (AActor* Owner = GetOwner())
     {
         const FVector Loc = Owner->GetActorLocation();
-        SendToServer(Loc.X, Loc.Y, Loc.Z);
+        const FRotator Rot = Owner->GetActorRotation();
+        SendToServer(Loc.X, Loc.Y, Loc.Z, Rot.Pitch, Rot.Yaw, Rot.Roll);
     }
 }
 
@@ -208,14 +212,14 @@ void UNetSyncComponent::ReceiveFromServer()
         {
             const sc_packet_add_player* Pkt =
                 reinterpret_cast<const sc_packet_add_player*>(RecvBuffer.GetData());
-            AddPlayer(Pkt->m_id, Pkt->m_visual, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z));
+            AddPlayer(Pkt->m_id, Pkt->m_visual, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z), FRotator(Pkt->m_pitch, Pkt->m_yaw, Pkt->m_roll));
             break;
         }
         case PKT_S2C_PLAYER_POSITION:
         {
             const sc_packet_player_position* Pkt =
                 reinterpret_cast<const sc_packet_player_position*>(RecvBuffer.GetData());
-            UpdatePosition(Pkt->m_id, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z));
+            UpdatePosition(Pkt->m_id, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z), FRotator(Pkt->m_pitch, Pkt->m_yaw, Pkt->m_roll));
             break;
         }
         case PKT_S2C_REMOVE_PLAYER:
@@ -289,7 +293,7 @@ void UNetSyncComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     InterpolateMonsters(DeltaTime);
 }
 
-void UNetSyncComponent::AddPlayer(int32 Id, int32 Visual, const FVector& Location)
+void UNetSyncComponent::AddPlayer(int32 Id, int32 Visual, const FVector& Location, const FRotator& Rotation)
 {
     UE_LOG(LogTemp, Warning, TEXT("ADDPLAYER CALLED id=%d visual=%d"), Id, Visual);
 
@@ -312,12 +316,13 @@ void UNetSyncComponent::AddPlayer(int32 Id, int32 Visual, const FVector& Locatio
     Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
     AActor* NewActor = GetWorld()->SpawnActor<AActor>(
-        VisualClasses[Visual], Location, FRotator::ZeroRotator, Params);
+        VisualClasses[Visual], Location, Rotation, Params);
 
     if (NewActor)
     {
         RemotePlayers.Add(Id, NewActor);
         TargetLocations.Add(Id, Location);
+        TargetRotations.Add(Id, Rotation);
         UE_LOG(LogTemp, Log, TEXT("NetSync: player %d spawned"), Id);
     }
     else
@@ -326,7 +331,7 @@ void UNetSyncComponent::AddPlayer(int32 Id, int32 Visual, const FVector& Locatio
     }
 }
 
-void UNetSyncComponent::UpdatePosition(int32 Id, const FVector& Location)
+void UNetSyncComponent::UpdatePosition(int32 Id, const FVector& Location, const FRotator& Rotation)
 {
     if (Id == MyId) return;
 
@@ -335,6 +340,7 @@ void UNetSyncComponent::UpdatePosition(int32 Id, const FVector& Location)
     if (RemotePlayers.Contains(Id))
     {
         TargetLocations.Add(Id, Location);
+        TargetRotations.Add(Id, Rotation);
     }
     // ADD_PLAYER보다 POSITION이 먼저 도착하는 경우가 실제로 있다. 그냥 버린다.
 }
@@ -489,12 +495,16 @@ void UNetSyncComponent::InterpolateRemotePlayers(float DeltaTime)
                 Move->Velocity = Velocity;
             }
 
-            if (!Velocity.IsNearlyZero(1.0f))
+            if (const FRotator* TargetRot = TargetRotations.Find(Pair.Key))
             {
-                FRotator NewRot = Velocity.Rotation();
-                NewRot.Pitch = 0.0f;
-                NewRot.Roll = 0.0f;
-                RemoteChar->SetActorRotation(NewRot);
+                const FRotator Current2 = RemoteChar->GetActorRotation();
+
+                FRotator YawOnly(0.0f, TargetRot->Yaw, 0.0f);
+
+                FRotator Smooth = FMath::RInterpTo(Current2, *TargetRot, DeltaTime, RotationInterpSpeed);
+                Smooth.Pitch = 0.0f;   // 보간 중간값도 확실히 막기
+                Smooth.Roll = 0.0f;
+                RemoteChar->SetActorRotation(Smooth);
             }
         }
     }

@@ -70,12 +70,16 @@ struct SESSION
     std::string m_addr; // 로그 출력용 "IP:포트" 문자열 (실제 통신에는 안 쓰임)
     EXP_OVER    m_recv_over{};
 
-    char m_prev_buf[PREV_BUF_SIZE];
+    char m_prev_buf[PREV_BUF_SIZE]{};
     int  m_prev_size = 0;
 
     float m_x = 0.f;
     float m_y = 0.f;
     float m_z = 0.f;
+
+    float m_pitch = 0.f;
+    float m_yaw = 0.f;
+    float m_roll = 0.f;
 
     int m_visual = 0;       // 일단 임시로 생성. 나중가면 enum으로 따로 만들어야될듯. (디폴트 0 -> 기본 캐릭터)
 };
@@ -226,6 +230,9 @@ void update_position(SESSION* me)
     up.m_x = me->m_x;
     up.m_y = me->m_y;
     up.m_z = me->m_z;
+	up.m_pitch = me->m_pitch;
+	up.m_yaw = me->m_yaw;
+	up.m_roll = me->m_roll;
 
     {
         std::lock_guard<std::mutex> lock(g_player_lock);
@@ -377,6 +384,9 @@ void process_packet(SESSION* p, int bytes_transferred)
             p->m_x = pkt->m_x;
             p->m_y = pkt->m_y;
             p->m_z = pkt->m_z;
+            p->m_pitch = pkt->m_pitch;
+            p->m_yaw = pkt->m_yaw;
+            p->m_roll = pkt->m_roll;
 
             update_position(p);
 
@@ -451,6 +461,9 @@ void add_player_notification(SESSION* p)
     ap.m_x = p->m_x;
     ap.m_y = p->m_y;
     ap.m_z = p->m_z;
+    ap.m_pitch = p->m_pitch;
+	ap.m_yaw = p->m_yaw;
+	ap.m_roll = p->m_roll;
 
     {
         std::lock_guard<std::mutex> lock(g_player_lock);

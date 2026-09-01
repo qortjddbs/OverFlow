@@ -12,6 +12,7 @@ struct PACKET_HEADER
 struct cs_packet_player_move : PACKET_HEADER   // 3 + 12바이트
 {
     float m_x, m_y, m_z;
+    float m_pitch, m_yaw, m_roll;
 };
 
 struct sc_packet_add_player : PACKET_HEADER     // 3 + 20바이트
@@ -19,12 +20,14 @@ struct sc_packet_add_player : PACKET_HEADER     // 3 + 20바이트
     int m_id;
     int m_visual;
     float m_x, m_y, m_z;
+    float m_pitch, m_yaw, m_roll;
 };
 
 struct sc_packet_player_position : PACKET_HEADER       // 3 + 16바이트
 {
     int m_id;
     float m_x, m_y, m_z;
+    float m_pitch, m_yaw, m_roll;
 };
 
 struct sc_packet_remove_player : PACKET_HEADER      // 3 + 4바이트

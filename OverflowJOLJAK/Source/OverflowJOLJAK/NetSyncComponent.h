@@ -38,6 +38,9 @@ public:
     UPROPERTY(EditAnywhere, Category = "NetSync")
     float InterpSpeed = 12.0f;
 
+    UPROPERTY(EditAnywhere, Category = "NetSync")
+    float RotationInterpSpeed = 10.f;
+
     /** 몬스터 보간 속도. 서버 틱이 플레이어보다 느리면(10Hz 등) 값을 낮춰서 더 부드럽게 보이게 조절 가능. */
     UPROPERTY(EditAnywhere, Category = "NetSync")
     float MonsterInterpSpeed = 8.0f;
@@ -75,6 +78,7 @@ private:
 
     // 30Hz로 띄엄띄엄 오는 좌표. 매 프레임 여기로 보간해 따라간다.
     TMap<int32, FVector> TargetLocations;
+    TMap<int32, FRotator> TargetRotations;
 
     // 몬스터는 플레이어와 완전히 별개의 id 네임스페이스라서 맵도 따로 관리한다.
     UPROPERTY()
@@ -87,11 +91,11 @@ private:
 
     void ConnectToServer();
     void ReceiveFromServer();
-    void SendToServer(float X, float Y, float Z);
+    void SendToServer(float X, float Y, float Z, float Pitch, float Yaw, float Roll);
     void SendPositionTick();
 
-    void AddPlayer(int32 Id, int32 Visual, const FVector& Location);
-    void UpdatePosition(int32 Id, const FVector& Location);
+    void AddPlayer(int32 Id, int32 Visual, const FVector& Location, const FRotator& Rotation);
+    void UpdatePosition(int32 Id, const FVector& Location, const FRotator& Rotation);
     void RemovePlayer(int32 Id);
 
     void AddMonster(int32 Id, uint8 MonsterType, const FVector& Location, int32 Hp);
