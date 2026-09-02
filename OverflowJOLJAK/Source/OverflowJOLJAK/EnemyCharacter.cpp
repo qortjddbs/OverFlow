@@ -20,7 +20,7 @@ void AEnemyCharacter::BeginPlay()
     CurrentHp = MaxHp;
 }
 
-void AEnemyCharacter::OnHpChanged_Implementation(int32 NewHp, int32 PreviousHp)
+void AEnemyCharacter::OnHpChanged_Implementation(float NewHp, float PreviousHp)
 {
     CurrentHp = NewHp;
     // 기본 구현은 값만 갱신. 피격 이펙트/애니메이션이 필요하면
