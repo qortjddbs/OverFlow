@@ -420,6 +420,7 @@ void UNetSyncComponent::UpdateMonsterHp(int32 Id, int32 NewHp)
         if (AEnemyCharacter* Enemy = Cast<AEnemyCharacter>(*Found))
         {
             const int32 PreviousHp = Enemy->CurrentHp;
+            Enemy->CurrentHp = NewHp;
             Enemy->OnHpChanged(NewHp, PreviousHp);
         }
     }
@@ -435,7 +436,6 @@ void UNetSyncComponent::RemoveMonster(int32 Id)
             {
                 // 사망 연출(애니메이션/파티클)과 실제 Destroy 타이밍은
                 // AEnemyCharacter::Die 쪽(블루프린트에서 오버라이드 가능)에 맡긴다.
-                Enemy->OnHpChanged(0.0f, Enemy->CurrentHp);
                 Enemy->Die();
             }
             else
