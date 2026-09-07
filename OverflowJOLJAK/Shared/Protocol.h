@@ -40,7 +40,7 @@ struct sc_packet_monster_spawn : PACKET_HEADER      // 3 + 21바이트
     int m_id;
     unsigned char m_monster_type;
     float m_x, m_y, m_z;
-    int m_hp;
+    float m_hp;
 };
 
 struct sc_packet_monster_position : PACKET_HEADER   // 3 + 16바이트
@@ -65,7 +65,7 @@ struct cs_packet_player_attack : PACKET_HEADER      // 3 + 24바이트
 struct sc_packet_monster_hp : PACKET_HEADER         // 3 + 8바이트
 {
     int m_id;
-    int m_hp;
+    float m_hp;
 };
 
 struct sc_packet_monster_remove : PACKET_HEADER     // 3 + 4바이트

@@ -549,6 +549,7 @@ void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
 
 void UNetSyncComponent::SpawnRemoteFireCosmetic(const FVector& MuzzleLocation, const FVector& Direction)
 {
+    UE_LOG(LogTemp, Warning, TEXT("SpawnRemoteFireCosmetic called"));   // 임시
     if (!RemoteFireProjectileClass)
     {
         return;

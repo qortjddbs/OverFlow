@@ -98,7 +98,7 @@ struct MONSTER
     float m_x = 0.f;
     float m_y = 0.f;
     float m_z = 0.f;
-    int m_hp = 0;
+    float m_hp = 0.f;
 
     MonsterState m_state = IDLE;
     int m_target_id = 0;
@@ -221,6 +221,27 @@ void disconnect(int id)
     }
 }
 
+void broadcast_fire_event(SESSION* shooter, const cs_packet_player_fire* pkt)
+{
+    sc_packet_player_fire fp;
+    fp.m_size = sizeof(fp);
+    fp.m_type = PKT_S2C_PLAYER_FIRE;
+    fp.m_shooter_id = shooter->m_id;
+    fp.m_muzzle_x = pkt->m_muzzle_x;
+    fp.m_muzzle_y = pkt->m_muzzle_y;
+    fp.m_muzzle_z = pkt->m_muzzle_z;
+    fp.m_dir_x = pkt->m_dir_x;
+    fp.m_dir_y = pkt->m_dir_y;
+    fp.m_dir_z = pkt->m_dir_z;
+
+    std::lock_guard<std::mutex> lock(g_player_lock);
+    for (auto& [id, session] : g_players)
+    {
+        if (id == shooter->m_id) continue;   // 쏜 사람 본인은 제외
+        send_packet(&session, &fp, sizeof(fp));
+    }
+}
+
 void update_position(SESSION* me)
 {
     sc_packet_player_position up;
@@ -316,6 +337,12 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
             hit_mon->m_hp -= PLAYER_ATTACK_DAMAGE;
             std::cout << "monster " << hit_mon->m_id << " hp=" << hit_mon->m_hp << "\n";
 
+            hp_pkt.m_size = sizeof(hp_pkt);
+            hp_pkt.m_type = PKT_S2C_MONSTER_HP;
+            hp_pkt.m_id = hit_mon->m_id;
+            hp_pkt.m_hp = hit_mon->m_hp;
+            hit_broadcast = true;
+
             if (hit_mon->m_hp <= 0)
             {
                 remove_pkt.m_size = sizeof(remove_pkt);
@@ -332,14 +359,6 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
                     }), g_monsters.end());
                 g_pending_respawn.push_back({ dead_id, std::chrono::steady_clock::now() + std::chrono::seconds(10) });
             }
-            else 
-            {
-                hp_pkt.m_size = sizeof(hp_pkt);
-                hp_pkt.m_type = PKT_S2C_MONSTER_HP;
-                hp_pkt.m_id = hit_mon->m_id;
-                hp_pkt.m_hp = hit_mon->m_hp;
-                hit_broadcast = true;
-            }
         }
     }       // 몬스터 락 해제
 
@@ -350,7 +369,9 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
         {
             send_packet(&session, &hp_pkt, sizeof(hp_pkt));
         }
-    } else if (remove_broadcast)
+    }
+    
+    if (remove_broadcast)
     {
         std::lock_guard<std::mutex> player_lock(g_player_lock);
         for (auto& [id, session] : g_players)
@@ -400,6 +421,12 @@ void process_packet(SESSION* p, int bytes_transferred)
              std::cout << "[attack pkt] origin=(" << pkt->m_origin_x << "," << pkt->m_origin_y << "," << pkt->m_origin_z
                << ") dir=(" << pkt->m_dir_x << "," << pkt->m_dir_y << "," << pkt->m_dir_z << ")\n";   // 임시
             handle_player_attack(p, pkt);
+            break;
+        }
+        case PKT_C2S_FIRE:
+        {
+            cs_packet_player_fire* pkt = reinterpret_cast<cs_packet_player_fire*>(ptr);
+            broadcast_fire_event(p, pkt);
             break;
         }
         default:
