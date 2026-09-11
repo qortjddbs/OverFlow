@@ -14,7 +14,7 @@ UENUM(BlueprintType)
 enum class EWeaponMode : uint8
 {
     Attack  UMETA(DisplayName = "Attack"),
-    // 예정: Build, Scan 등
+    Mining  UMETA(DisplayName = "Mining"),   // 추가
 };
 
 // 무기 공용 베이스 클래스. 발사 로직(조준 계산, 쿨다운, 총알 스폰)만 여기 있고,
@@ -36,17 +36,15 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon|Mode")
     EWeaponMode CurrentMode = EWeaponMode::Attack;
 
-    // 주 액션(왼쪽 클릭) 진입점. 캐릭터는 이 함수만 호출하고,
-    // 실제로 무슨 일이 일어날지는 현재 모드가 결정한다.
-    UFUNCTION(BlueprintCallable, Category = "Weapon")
-    void OnPrimaryAction();
-
     UFUNCTION(BlueprintCallable, Category = "Weapon|Mode")
     void SetMode(EWeaponMode NewMode);
 
     // 모드 전환 키를 하나만 두고 순환시키고 싶을 때 사용.
     UFUNCTION(BlueprintCallable, Category = "Weapon|Mode")
     void CycleMode();
+
+    UFUNCTION(BlueprintCallable, Category = "Weapon|Mode")
+    void CyclePrevMode();
 
     // 모드가 바뀐 직후 호출됨. 블루프린트에서 오버라이드해서
     // 무기 외형 변경, UI 갱신, 전환 사운드 등을 처리하면 된다.
@@ -89,6 +87,25 @@ public:
     // 블루프린트에서 오버라이드해서 총구 화염, 발사음, 반동 등을 재생하면 된다.
     UFUNCTION(BlueprintImplementableEvent, Category = "Weapon")
     void OnFireEffects(const FVector& MuzzleLocation, const FVector& TargetLocation);
+
+
+	// ===== 채굴 모드 =====
+    UFUNCTION(BlueprintCallable, Category = "Weapon")
+    void Mine();
+
+    UPROPERTY(EditAnywhere, Category = "Weapon|Mining")
+    float MineRange = 500.f;      // 채굴 사거리 (근거리)
+
+    UPROPERTY(EditAnywhere, Category = "Weapon|Mining")
+    float MineCooldown = 0.15f;   // 연속 채굴 간격
+
+    UFUNCTION(BlueprintImplementableEvent, Category = "Weapon")
+    void OnMineEffects(const FVector& HitLocation, AActor* HitActor);
+    
+
+
+private:
+    float LastMineTime = -1000.f;
 
 protected:
     virtual void BeginPlay() override;

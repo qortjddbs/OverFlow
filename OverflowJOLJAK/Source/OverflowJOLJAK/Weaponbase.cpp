@@ -24,21 +24,24 @@ void AWeaponBase::BeginPlay()
     Super::BeginPlay();
 }
 
-void AWeaponBase::OnPrimaryAction()
-{
-    // 캐릭터는 이 함수만 부르고, 무슨 일이 일어날지는 여기서 모드가 결정한다.
-    // 새 모드를 추가하면 여기 케이스를 늘리면 되고, Fire()는 건드릴 필요가 없다.
-    switch (CurrentMode)
-    {
-    case EWeaponMode::Attack:
-        Fire();
-        break;
-
-    default:
-        UE_LOG(LogTemp, Warning, TEXT("WeaponBase: unhandled weapon mode"));
-        break;
-    }
-}
+// 캐릭터 클래스에서 처리하도록 바꿈
+//void AWeaponBase::OnPrimaryAction()
+//{
+//    // 캐릭터는 이 함수만 부르고, 무슨 일이 일어날지는 여기서 모드가 결정한다.
+//    // 새 모드를 추가하면 여기 케이스를 늘리면 되고, Fire()는 건드릴 필요가 없다.
+//    switch (CurrentMode)
+//    {
+//    case EWeaponMode::Attack:
+//        Fire();
+//        break;
+//    case EWeaponMode::Mining:      // 추가
+//        Mine();
+//        break;
+//    default:
+//        UE_LOG(LogTemp, Warning, TEXT("WeaponBase: unhandled weapon mode"));
+//        break;
+//    }
+//}
 
 void AWeaponBase::SetMode(EWeaponMode NewMode)
 {
@@ -61,6 +64,13 @@ void AWeaponBase::CycleMode()
 
     const uint8 Next = (static_cast<uint8>(CurrentMode) + 1) % ModeCount;
     SetMode(static_cast<EWeaponMode>(Next));
+}
+
+void AWeaponBase::CyclePrevMode()
+{
+    constexpr uint8 Count = static_cast<uint8>(EWeaponMode::Mining) + 1;
+    uint8 Prev = (static_cast<uint8>(CurrentMode) + Count - 1) % Count;
+    SetMode(static_cast<EWeaponMode>(Prev));
 }
 
 void AWeaponBase::Fire()
@@ -160,4 +170,40 @@ void AWeaponBase::Fire()
     }
 
     OnFireEffects(MuzzleLocation, TargetPoint);
+}
+
+void AWeaponBase::Mine()
+{
+    // 채굴 쿨다운 (연속 입력이라 필요)
+    const float Now = GetWorld()->GetTimeSeconds();
+    if (Now - LastMineTime < MineCooldown)
+    {
+        return;
+    }
+    LastMineTime = Now;
+
+    ACharacter* OwnerChar = Cast<ACharacter>(GetOwner());
+    if (!OwnerChar) return;
+
+    UCameraComponent* Camera = OwnerChar->FindComponentByClass<UCameraComponent>();
+    if (!Camera) return;
+
+    // 화면 중앙에서 짧은 거리 트레이스 (채굴은 근거리라 사거리 짧게)
+    const FVector Start = Camera->GetComponentLocation();
+    const FVector End = Start + Camera->GetForwardVector() * MineRange;
+
+    FCollisionQueryParams Params;
+    Params.AddIgnoredActor(OwnerChar);
+    Params.AddIgnoredActor(this);
+
+    FHitResult Hit;
+    if (GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+    {
+        // 여기서 Hit.GetActor()가 캘 수 있는 대상인지 판정
+        // (대상을 아직 안 정했으니, 지금은 로그로 확인만)
+        UE_LOG(LogTemp, Warning, TEXT("Mining: hit %s"), *Hit.GetActor()->GetName());
+
+        // 채굴 연출(이펙트/사운드)은 블루프린트에서
+        OnMineEffects(Hit.ImpactPoint, Hit.GetActor());
+    }
 }
