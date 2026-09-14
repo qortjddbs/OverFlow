@@ -30,7 +30,12 @@ constexpr int MAX_PACKET_SIZE = sizeof(sc_packet_add_player);  // 존재하는 �
 constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 
 // 플레이어 관련 상수들
-constexpr int PLAYER_ATTACK_DAMAGE = 40;
+constexpr float PLAYER_ATTACK_DAMAGE = 40.f;
+constexpr float PLAYER_MAX_HP = 100.f;
+constexpr float PLAYER_RESPAWN_TIME = 3.f;
+constexpr float PLAYER_SPAWN_X = 0.f;
+constexpr float PLAYER_SPAWN_Y = 0.f;
+constexpr float PLAYER_SPAWN_Z = 0.f;
 
 // 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = 0.f;
@@ -41,6 +46,7 @@ constexpr float MONSTER_SPAWN_MAX_RADIUS = 1500.f;
 constexpr float MONSTER_CHASE_RANGE = 1000.f;
 constexpr float MONSTER_ATTACK_RANGE = 100.f;
 constexpr float MONSTER_ATTACK_COOL = 1.f;
+constexpr float MONSTER_ATTACK_DAMAGE = 20.f;
 constexpr int MONSTER_HEARTBEAT = 100;
 constexpr float MONSTER_MOVE_SPEED = 10.f;
 constexpr float MONSTER_HIT_RADIUS = 60.f;   // 몸통 반지름 (X,Y 조준 허용 오차). 슬라임 크기에 맞게.
@@ -70,6 +76,8 @@ struct SESSION
 
     char m_prev_buf[PREV_BUF_SIZE]{};
     int  m_prev_size = 0;
+
+    float m_hp = 100;
 
     float m_x = 0.f;
     float m_y = 0.f;
@@ -130,8 +138,9 @@ struct TERRAIN_EDIT
 std::mutex g_terrain_lock;
 std::vector<TERRAIN_EDIT> g_terrain_edits;
 
-// 
-std::vector<std::pair<int, std::chrono::steady_clock::time_point>> g_pending_respawn;
+// 플레이어 및 몬스터 리스폰용 타이머
+std::vector<std::pair<int, std::chrono::steady_clock::time_point>> g_pending_player_respawn;
+std::vector<std::pair<int, std::chrono::steady_clock::time_point>> g_pending_monster_respawn;
 
 std::mutex g_console_lock;                  // cout/cerr이 여러 스레드에서 섞이지 않게
 
@@ -391,11 +400,11 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
             //float dist = sqrtf((mon.m_x - pkt->m_origin_x) * (mon.m_x - pkt->m_origin_x) + (mon.m_y - pkt->m_origin_y) * (mon.m_y - pkt->m_origin_y));
             float dist = fabsf((mon.m_y - pkt->m_origin_y) * nx - (mon.m_x - pkt->m_origin_x) * ny);
 
-            std::cout << "  monster " << mon.m_id << " dist=" << dist << " (radius=" << MONSTER_HIT_RADIUS << ")\n";   // 임시
-            std::cout << "  monster " << mon.m_id << " pos=(" << mon.m_x << "," << mon.m_y << "," << mon.m_z << ") dist=" << dist << "\n";
+            // std::cout << "  monster " << mon.m_id << " dist=" << dist << " (radius=" << MONSTER_HIT_RADIUS << ")\n";   // 임시
+            // std::cout << "  monster " << mon.m_id << " pos=(" << mon.m_x << "," << mon.m_y << "," << mon.m_z << ") dist=" << dist << "\n";
 
 
-            std::cout << "monster " << mon.m_id << " t=" << t << "\n";
+            // std::cout << "monster " << mon.m_id << " t=" << t << "\n";
             if (dist <= MONSTER_HIT_RADIUS && t < closest_t)
             {
                 closest_t = t;
@@ -406,7 +415,7 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
         if (hit_mon != nullptr)
         {
             hit_mon->m_hp -= PLAYER_ATTACK_DAMAGE;
-            std::cout << "monster " << hit_mon->m_id << " hp=" << hit_mon->m_hp << "\n";
+            // std::cout << "monster " << hit_mon->m_id << " hp=" << hit_mon->m_hp << "\n";
 
             hp_pkt.m_size = sizeof(hp_pkt);
             hp_pkt.m_type = PKT_S2C_MONSTER_HP;
@@ -428,7 +437,7 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
                 g_monsters.erase(std::remove_if(g_monsters.begin(), g_monsters.end(), [dead_id](const MONSTER& m) {
                     return m.m_id == dead_id;
                     }), g_monsters.end());
-                g_pending_respawn.push_back({ dead_id, std::chrono::steady_clock::now() + std::chrono::seconds(10) });
+                g_pending_monster_respawn.push_back({ dead_id, std::chrono::steady_clock::now() + std::chrono::seconds(10) });
             }
         }
     }       // 몬스터 락 해제
@@ -747,8 +756,9 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
             std::lock_guard<std::mutex> player_lock(g_player_lock);        // 항상 플레이어 락 먼저
             std::lock_guard<std::mutex> monster_lock(g_monster_lock);       // 그 다음 몬스터 락 (데드락 방지)
 
+            // 몬스터 리스폰 로직
             auto now2 = std::chrono::steady_clock::now();
-            for (auto it = g_pending_respawn.begin(); it != g_pending_respawn.end(); )
+            for (auto it = g_pending_monster_respawn.begin(); it != g_pending_monster_respawn.end(); )
             {
                 if (now2 >= it->second)
                 {
@@ -768,11 +778,39 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                     sp.m_id = m.m_id; sp.m_x = m.m_x; sp.m_y = m.m_y; sp.m_z = m.m_z; sp.m_hp = m.m_hp;
                     for (auto& [id, session] : g_players) send_packet(&session, &sp, sizeof(sp));
 
-                    it = g_pending_respawn.erase(it);
+                    it = g_pending_monster_respawn.erase(it);
                 }
                 else ++it;
             }
 
+            // 플레이어 리스폰 로직
+            for (auto it = g_pending_player_respawn.begin(); it != g_pending_player_respawn.end(); )
+            {
+                if (now2 >= it->second)
+                {
+                    auto p_it = g_players.find(it->first);
+                    if (p_it != g_players.end())                // 리스폰 대기 중 끊었을 수도 있으니 체크
+                    {
+                        p_it->second.m_hp = PLAYER_MAX_HP;
+                        p_it->second.m_x = PLAYER_SPAWN_X;
+                        p_it->second.m_y = PLAYER_SPAWN_Y;
+                        p_it->second.m_z = PLAYER_SPAWN_Z;
+
+                        sc_packet_player_respawn pr;
+                        pr.m_size = sizeof(pr);
+                        pr.m_type = PKT_S2C_PLAYER_RESPAWN;
+                        pr.m_id = p_it->first;
+                        pr.m_x = PLAYER_SPAWN_X;
+                        pr.m_y = PLAYER_SPAWN_Y;
+                        pr.m_z = PLAYER_SPAWN_Z;
+                        pr.m_hp = PLAYER_MAX_HP;
+
+                        for (auto& [id, session] : g_players) send_packet(&session, &pr, sizeof(pr));
+                    }
+                }
+            }
+
+            // 플레이어 <-> 몬스터 거리 계산 로직 (가장 가까운 플레이어 찾기)
             for (auto& mon : g_monsters) 
             {
                 float min_distance = MONSTER_CHASE_RANGE;
@@ -782,6 +820,8 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
 
                 for (auto& [id, session] : g_players) 
                 {
+                    if (session.m_hp <= 0) continue;
+
                     float dx = session.m_x - mon.m_x;
                     float dy = session.m_y - mon.m_y;
                     float distance = sqrtf(dx * dx + dy * dy);
@@ -796,11 +836,13 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                     }
                 }
 
+                // 못찾았으면
                 if (player_id == 0)
                 {
                     mon.m_state = IDLE;
                     mon.m_target_id = 0;
                 }
+                // 추적 상태
                 else if (min_distance <= MONSTER_CHASE_RANGE && min_distance > MONSTER_ATTACK_RANGE)
                 {
                     mon.m_state = CHASE;
@@ -826,6 +868,7 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                         send_packet(&session, &mp, sizeof(mp));
                     }
                 }
+                // 공격 상태 (공격 사거리 진입)
                 else if (min_distance <= MONSTER_ATTACK_RANGE)
                 {
                     mon.m_state = ATTACK;
@@ -836,13 +879,38 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                     {
                         sc_packet_monster_attack ma;
                         ma.m_size = sizeof(ma);
-                        ma.m_type = PKT_S2C_MONSTER_ATTACK;
+                        ma.m_type = PKT_S2C_MONSTER_ATTACK; 
                         ma.m_id = mon.m_id;
                         ma.m_target_id = mon.m_target_id;
 
                         for (auto& [id, session] : g_players)
                         {
                             send_packet(&session, &ma, sizeof(ma));
+                        }
+
+                        auto target_it = g_players.find(mon.m_target_id);
+                        if (target_it != g_players.end())
+                        {
+                            target_it->second.m_hp -= MONSTER_ATTACK_DAMAGE;
+
+                            sc_packet_player_hp ph;
+                            ph.m_size = sizeof(ph);
+                            ph.m_type = PKT_S2C_PLAYER_HP;
+                            ph.m_id = target_it->first;
+                            ph.m_hp = target_it->second.m_hp;
+                            for (auto& [id, session] : g_players) send_packet(&session, &ph, sizeof(ph));
+
+                            if (target_it->second.m_hp <= 0)
+                            {
+                                sc_packet_player_death pd;
+                                pd.m_size = sizeof(pd);
+                                pd.m_type = PKT_S2C_PLAYER_DEATH;
+                                pd.m_id = target_it->first;
+                                for (auto& [id, session] : g_players) send_packet(&session, &pd, sizeof(pd));
+
+                                g_pending_player_respawn.push_back({ target_it->first, std::chrono::steady_clock::now() 
+                                    + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float>(PLAYER_RESPAWN_TIME))});
+                            }
                         }
 
                         mon.m_last_attack = now;

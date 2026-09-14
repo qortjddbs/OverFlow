@@ -1,4 +1,4 @@
-﻿// 26. 09. 14 최신화
+﻿// 26. 09. 15 최신화
 #pragma once
 
 // 헤더: 패킷 전체 크기(size) + 패킷 종류(type) 모든 패킷은 이 헤더로 시작
@@ -106,6 +106,24 @@ struct sc_packet_build : PACKET_HEADER              // 3 + 12바이트
     float m_x, m_y, m_z;
 };
 
+struct sc_packet_player_hp : PACKET_HEADER          // 3 + 8바이트
+{
+    int m_id;
+    float m_hp;
+};
+
+struct sc_packet_player_death : PACKET_HEADER          // 3 + 4바이트
+{
+    int m_id;
+};
+
+struct sc_packet_player_respawn : PACKET_HEADER         // 3 + 20바이트
+{
+    int m_id;
+    float m_x, m_y, m_z;
+    float m_hp;
+};
+
 #pragma pack(pop)   // 여기까지만 적용
 
 enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가기 때문에 타입(크기) 명시
@@ -126,4 +144,7 @@ enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가�
     PKT_C2S_BUILD = 14,
     PKT_S2C_DIG = 15,
     PKT_S2C_BUILD = 16,
+    PKT_S2C_PLAYER_HP = 17,
+    PKT_S2C_PLAYER_DEATH = 18,
+    PKT_S2C_PLAYER_RESPAWN = 19
 };
