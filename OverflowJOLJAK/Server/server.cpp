@@ -26,7 +26,7 @@
 constexpr unsigned short LISTEN_PORT = 7777;
 constexpr int MAX_BUF_SIZE = 4096;
 constexpr int HEADER_SIZE = sizeof(PACKET_HEADER);
-constexpr int MAX_PACKET_SIZE = sizeof(cs_packet_player_attack);  // 존재하는 패킷 중 제일 큰 거
+constexpr int MAX_PACKET_SIZE = sizeof(sc_packet_add_player);  // 존재하는 패킷 중 제일 큰 거
 constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 
 // 플레이어 관련 상수들
@@ -43,8 +43,6 @@ constexpr float MONSTER_ATTACK_RANGE = 100.f;
 constexpr float MONSTER_ATTACK_COOL = 1.f;
 constexpr int MONSTER_HEARTBEAT = 100;
 constexpr float MONSTER_MOVE_SPEED = 10.f;
-//constexpr float MONSTER_HIT_RADIUS = 34.f;      // 몬스터 중심으로부터 히트박스(구) 반지름 길이
-
 constexpr float MONSTER_HIT_RADIUS = 60.f;   // 몸통 반지름 (X,Y 조준 허용 오차). 슬라임 크기에 맞게.
 constexpr float MONSTER_HIT_HEIGHT = 2000.f;  // 판정 기둥 높이. 서버-클라 Z 오차 흡수용으로 넉넉히.
 constexpr float MONSTER_HIT_Z_MARGIN = 1000.f;  // 기둥을 몬스터 z에서 아래로 얼마나 더 내릴지 (여유).
@@ -77,6 +75,7 @@ struct SESSION
     float m_y = 0.f;
     float m_z = 0.f;
 
+    // 클라이언트에서 캐릭터가 바라보는 방향 동기화하기 위한 변수
     float m_pitch = 0.f;
     float m_yaw = 0.f;
     float m_roll = 0.f;
@@ -115,6 +114,23 @@ std::unordered_map<int, SESSION> g_players;   // key = client id
 std::mutex g_monster_lock;
 std::vector <MONSTER> g_monsters;
 
+enum TerrainEditType
+{
+    DIG,
+    BUILD,
+    FLAT
+};
+
+struct TERRAIN_EDIT
+{
+    int m_edit_type;
+    float m_x, m_y, m_z;
+};
+
+std::mutex g_terrain_lock;
+std::vector<TERRAIN_EDIT> g_terrain_edits;
+
+// 
 std::vector<std::pair<int, std::chrono::steady_clock::time_point>> g_pending_respawn;
 
 std::mutex g_console_lock;                  // cout/cerr이 여러 스레드에서 섞이지 않게
@@ -221,6 +237,7 @@ void disconnect(int id)
     }
 }
 
+// 도현이가 추가한 코드 - 총알 발사할 때 호출되는 함수로, 다른 클라이언트에서 발사하는 총알 보려고 만듦
 void broadcast_fire_event(SESSION* shooter, const cs_packet_player_fire* pkt)
 {
     sc_packet_player_fire fp;
@@ -239,6 +256,60 @@ void broadcast_fire_event(SESSION* shooter, const cs_packet_player_fire* pkt)
     {
         if (id == shooter->m_id) continue;   // 쏜 사람 본인은 제외
         send_packet(&session, &fp, sizeof(fp));
+    }
+}
+
+void broadcast_terrain_dig(SESSION* editor, const cs_packet_dig* pkt)
+{
+    TERRAIN_EDIT td;
+    td.m_edit_type = DIG;
+    td.m_x = pkt->m_x;
+    td.m_y = pkt->m_y;
+    td.m_z = pkt->m_z;
+    {
+        std::lock_guard<std::mutex> lock(g_terrain_lock);
+        g_terrain_edits.push_back(td);
+    }
+
+    sc_packet_dig pd;
+    pd.m_size = sizeof(pd);
+    pd.m_type = PKT_S2C_DIG;
+    pd.m_x = pkt->m_x;
+    pd.m_y = pkt->m_y;
+    pd.m_z = pkt->m_z;
+
+    std::lock_guard<std::mutex> lock(g_player_lock);
+    for (auto& [id, session] : g_players)
+    {
+        if (id == editor->m_id) continue;   // 본인 제외(로컬에서 이미 실행됨)
+        send_packet(&session, &pd, sizeof(pd));
+    }
+}
+
+void broadcast_terrain_build(SESSION* editor, const cs_packet_build* pkt)
+{
+    TERRAIN_EDIT td;
+    td.m_edit_type = BUILD;
+    td.m_x = pkt->m_x;
+    td.m_y = pkt->m_y;
+    td.m_z = pkt->m_z;
+    {
+        std::lock_guard<std::mutex> lock(g_terrain_lock);
+        g_terrain_edits.push_back(td);
+    }
+
+    sc_packet_build pb;
+    pb.m_size = sizeof(pb);
+    pb.m_type = PKT_S2C_BUILD;
+    pb.m_x = pkt->m_x;
+    pb.m_y = pkt->m_y;
+    pb.m_z = pkt->m_z;
+
+    std::lock_guard<std::mutex> lock(g_player_lock);
+    for (auto& [id, session] : g_players)
+    {
+        if (id == editor->m_id) continue;   // 본인 제외(로컬에서 이미 실행됨)
+        send_packet(&session, &pb, sizeof(pb));
     }
 }
 
@@ -429,6 +500,18 @@ void process_packet(SESSION* p, int bytes_transferred)
             broadcast_fire_event(p, pkt);
             break;
         }
+        case PKT_C2S_DIG:
+        {
+            cs_packet_dig* pkt = reinterpret_cast<cs_packet_dig*>(ptr);
+            broadcast_terrain_dig(p, pkt);
+            break;
+        }
+        case PKT_C2S_BUILD:
+        {
+            cs_packet_build* pkt = reinterpret_cast<cs_packet_build*>(ptr);
+            broadcast_terrain_build(p, pkt);
+            break;
+        }
         default:
             break; // 모르는 타입은 일단 무시
         }
@@ -535,11 +618,12 @@ void add_player_notification(SESSION* p)
 
 void send_monster_list(SESSION* p)
 {
+    sc_packet_monster_spawn ms;
+
     std::lock_guard<std::mutex> lock(g_monster_lock);
 
     for (auto& m : g_monsters)
     {
-        sc_packet_monster_spawn ms;
         ms.m_size = sizeof(ms);
         ms.m_type = PKT_S2C_MONSTER_SPAWN;
         ms.m_id = m.m_id;
@@ -550,6 +634,43 @@ void send_monster_list(SESSION* p)
         ms.m_monster_type = 0;
 
         send_packet(p, &ms, sizeof(ms));
+    }
+}
+
+void send_terrain_edit_list(SESSION* p)
+{
+    sc_packet_dig pd;
+    sc_packet_build pb;
+
+    std::lock_guard<std::mutex> lock(g_terrain_lock);
+
+    for (auto& te : g_terrain_edits)
+    {
+        switch (te.m_edit_type)
+        {
+        case DIG:
+        {
+            pd.m_size = sizeof(pd);
+            pd.m_type = PKT_S2C_DIG;
+            pd.m_x = te.m_x;
+            pd.m_y = te.m_y;
+            pd.m_z = te.m_z;
+
+            send_packet(p, &pd, sizeof(pd));
+            break;
+        }
+        case BUILD:
+        {
+            pb.m_size = sizeof(pb);
+            pb.m_type = PKT_S2C_BUILD;
+            pb.m_x = te.m_x;
+            pb.m_y = te.m_y;
+            pb.m_z = te.m_z;
+
+            send_packet(p, &pb, sizeof(pb));
+            break;
+        }
+        }
     }
 }
 
@@ -594,6 +715,7 @@ void accept_loop()
 
         add_player_notification(p);
         send_monster_list(p);
+        send_terrain_edit_list(p);
     }
 }
 
