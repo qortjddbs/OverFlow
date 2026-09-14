@@ -77,7 +77,7 @@ struct SESSION
     char m_prev_buf[PREV_BUF_SIZE]{};
     int  m_prev_size = 0;
 
-    float m_hp = 100;
+    float m_hp = 100.f;
 
     float m_x = 0.f;
     float m_y = 0.f;
@@ -806,7 +806,10 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                         pr.m_hp = PLAYER_MAX_HP;
 
                         for (auto& [id, session] : g_players) send_packet(&session, &pr, sizeof(pr));
+
+                        it = g_pending_player_respawn.erase(it);
                     }
+                    else ++it;
                 }
             }
 
