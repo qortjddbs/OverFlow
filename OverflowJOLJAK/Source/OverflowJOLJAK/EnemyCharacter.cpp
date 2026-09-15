@@ -1,12 +1,14 @@
 #include "EnemyCharacter.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
+#include "Components/CapsuleComponent.h"
+
 AEnemyCharacter::AEnemyCharacter()
 {
-    AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
-
     bUseControllerRotationYaw = false;
-    GetCharacterMovement()->bOrientRotationToMovement = false;
+
+    GetCharacterMovement()->SetMovementMode(MOVE_None);
+    GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
 
 void AEnemyCharacter::OnAttack_Implementation(int32 TargetPlayerId)

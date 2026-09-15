@@ -273,6 +273,20 @@ void UNetSyncComponent::ReceiveFromServer()
                 FVector(Pkt->m_dir_x, Pkt->m_dir_y, Pkt->m_dir_z));
             break;
         }
+        case PKT_S2C_PLAYER_DEATH:
+        {
+			const sc_packet_player_death* Pkt =
+				reinterpret_cast<const sc_packet_player_death*>(RecvBuffer.GetData());
+			HandlePlayerDeath(Pkt->m_id);
+			break;
+        }
+        case PKT_S2C_PLAYER_RESPAWN:
+		{
+			const sc_packet_player_respawn* Pkt =
+				reinterpret_cast<const sc_packet_player_respawn*>(RecvBuffer.GetData());
+			HandlePlayerRespawn(Pkt->m_id, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z));
+			break;
+		}
 
         default:
             break;
@@ -285,7 +299,6 @@ void UNetSyncComponent::ReceiveFromServer()
 void UNetSyncComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     FActorComponentTickFunction* ThisTickFunction)
 {
-    UE_LOG(LogTemp, Warning, TEXT("TICK ALIVE"));
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
     ReceiveFromServer();
@@ -473,6 +486,60 @@ void UNetSyncComponent::HandleMonsterAttack(int32 MonsterId, int32 TargetPlayerI
     UE_LOG(LogTemp, Log, TEXT("NetSync: monster %d attacked player %d"), MonsterId, TargetPlayerId);
 }
 
+void UNetSyncComponent::SpawnRemoteFireCosmetic(const FVector& MuzzleLocation, const FVector& Direction)
+{
+    UE_LOG(LogTemp, Warning, TEXT("SpawnRemoteFireCosmetic called"));   // 임시
+    if (!RemoteFireProjectileClass)
+    {
+        return;
+    }
+
+    FActorSpawnParameters Params;
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    AProjectile* Cosmetic = GetWorld()->SpawnActor<AProjectile>(
+        RemoteFireProjectileClass, MuzzleLocation, Direction.Rotation(), Params);
+
+    // ShooterCharacter를 일부러 안 채운다 - 이 연출용 총알은 무엇에 맞아도
+    // 서버에 공격 보고를 하지 않는다 (원래 쏜 사람이 이미 보고했으므로 중복 방지).
+}
+
+void UNetSyncComponent::HandlePlayerDeath(int32 Id)
+{
+    if (Id == MyId)
+    {
+        if (ACharacter* Ch = Cast<ACharacter>(GetOwner()))
+        {
+            Ch->GetCharacterMovement()->DisableMovement();   // 이동 정지
+            Ch->DisableInput(nullptr);                        // 입력 막기
+        }
+    }
+}
+
+void UNetSyncComponent::HandlePlayerRespawn(int32 Id, const FVector& Location)
+{
+    if (Id == MyId)
+    {
+        // 내 캐릭터 부활
+        if (AActor* Owner = GetOwner())
+        {
+            Owner->SetActorLocation(Location);
+        }
+    }
+    else
+    {
+        // 원격 플레이어 부활
+        if (AActor** Found = RemotePlayers.Find(Id))
+        {
+            if (IsValid(*Found))
+            {
+                (*Found)->SetActorLocation(Location);
+                TargetLocations.Add(Id, Location);   // 보간 목표도 갱신 (안 하면 이전 위치로 되돌아감)
+            }
+        }
+    }
+}
+
 void UNetSyncComponent::InterpolateRemotePlayers(float DeltaTime)
 {
     for (const TPair<int32, FVector>& Pair : TargetLocations)
@@ -513,54 +580,38 @@ void UNetSyncComponent::InterpolateRemotePlayers(float DeltaTime)
 
 void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
 {
+    const float SyncInterval = 1.0f / 30.0f;   // 서버 동기화 간격
+
     for (const TPair<int32, FVector>& Pair : MonsterTargetLocations)
     {
         AActor** Found = Monsters.Find(Pair.Key);
-        if (!Found || !IsValid(*Found))
-        {
-            continue;
-        }
+        if (!Found || !IsValid(*Found)) continue;
 
-        ACharacter* MonsterChar = Cast<ACharacter>(*Found);
-        if (!MonsterChar)
-        {
-            continue;
-        }
-
+        AActor* MonsterChar = *Found;
         const FVector Current = MonsterChar->GetActorLocation();
 
-        // 수평 방향만 계산 (Z는 무브먼트 컴포넌트의 중력이 담당)
-        FVector ToTarget = Pair.Value - Current;
-        ToTarget.Z = 0.f;
+        FVector Target = Pair.Value;
+        Target.Z = Current.Z;   // Z는 서버 값 무시 (중력/고정)
 
-        // 목표에 충분히 가까우면 이동 입력 안 줌 (도착 지점에서 떨림 방지)
-        if (ToTarget.SizeSquared() > 100.f)   // 10유닛 이상 떨어졌을 때만
+        const FVector NewLoc = FMath::VInterpTo(Current, Target, DeltaTime, MonsterInterpSpeed);
+        MonsterChar->SetActorLocation(NewLoc, false);
+
+        // 이동 방향으로 회전
+        FVector Dir = Target - Current;
+        Dir.Z = 0.f;
+        if (!Dir.IsNearlyZero(1.0f))
         {
-            const FVector Direction = ToTarget.GetSafeNormal();
-            MonsterChar->AddMovementInput(Direction, 1.0f);
+            FRotator R = Dir.Rotation();
+            R.Pitch = 0.f; R.Roll = 0.f;
+            FRotator Smooth = FMath::RInterpTo(MonsterChar->GetActorRotation(), R, DeltaTime, 8.f);
+            MonsterChar->SetActorRotation(Smooth);
+        }
 
-            FRotator NewRot = Direction.Rotation();
-            NewRot.Pitch = 0.f;
-            NewRot.Roll = 0.f;
-            MonsterChar->SetActorRotation(NewRot);
+        if (ACharacter* Ch = Cast<ACharacter>(MonsterChar))
+        {
+            FVector Vel = (NewLoc - Current) / DeltaTime;
+            Ch->GetCharacterMovement()->Velocity = Vel;
         }
     }
 }
 
-void UNetSyncComponent::SpawnRemoteFireCosmetic(const FVector& MuzzleLocation, const FVector& Direction)
-{
-    UE_LOG(LogTemp, Warning, TEXT("SpawnRemoteFireCosmetic called"));   // 임시
-    if (!RemoteFireProjectileClass)
-    {
-        return;
-    }
-
-    FActorSpawnParameters Params;
-    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-    AProjectile* Cosmetic = GetWorld()->SpawnActor<AProjectile>(
-        RemoteFireProjectileClass, MuzzleLocation, Direction.Rotation(), Params);
-
-    // ShooterCharacter를 일부러 안 채운다 - 이 연출용 총알은 무엇에 맞아도
-    // 서버에 공격 보고를 하지 않는다 (원래 쏜 사람이 이미 보고했으므로 중복 방지).
-}
