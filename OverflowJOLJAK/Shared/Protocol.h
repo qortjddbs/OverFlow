@@ -106,10 +106,11 @@ struct sc_packet_build : PACKET_HEADER              // 3 + 12바이트
     float m_x, m_y, m_z;
 };
 
-struct sc_packet_player_hp : PACKET_HEADER          // 3 + 8바이트
+struct sc_packet_player_hp : PACKET_HEADER          // 3 + 12바이트
 {
     int m_id;
     float m_hp;
+    float m_damage;     // 플레이어가 입은 데미지
 };
 
 struct sc_packet_player_death : PACKET_HEADER          // 3 + 4바이트
@@ -124,7 +125,7 @@ struct sc_packet_player_respawn : PACKET_HEADER         // 3 + 20바이트
     float m_hp;
 };
 
-struct sc_packet_your_id : PACKET_HEADER
+struct sc_packet_your_id : PACKET_HEADER                  // 3 + 4바이트
 {
     int m_id;
 };
