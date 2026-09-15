@@ -36,6 +36,7 @@ constexpr float PLAYER_RESPAWN_TIME = 3.f;
 constexpr float PLAYER_SPAWN_X = 0.f;
 constexpr float PLAYER_SPAWN_Y = 0.f;
 constexpr float PLAYER_SPAWN_Z = 200.f;
+constexpr float PLAYER_INVULN_TIME = 1.f;
 
 // 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = 0.f;
@@ -89,6 +90,8 @@ struct SESSION
     float m_roll = 0.f;
 
     int m_visual = 0;       // 일단 임시로 생성. 나중가면 enum으로 따로 만들어야될듯. (디폴트 0 -> 기본 캐릭터)
+
+    std::chrono::steady_clock::time_point m_last_hit_time{};
 };
 
 enum MonsterState
@@ -812,11 +815,10 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                         pr.m_hp = PLAYER_MAX_HP;
 
                         for (auto& [id, session] : g_players) send_packet(&session, &pr, sizeof(pr));
-
-                        it = g_pending_player_respawn.erase(it);
                     }
-                    else ++it;
+                    it = g_pending_player_respawn.erase(it);
                 }
+                else ++it;
             }
 
             // 플레이어 <-> 몬스터 거리 계산 로직 (가장 가까운 플레이어 찾기)
@@ -900,25 +902,30 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                         auto target_it = g_players.find(mon.m_target_id);
                         if (target_it != g_players.end())
                         {
-                            target_it->second.m_hp -= MONSTER_ATTACK_DAMAGE;
-
-                            sc_packet_player_hp ph;
-                            ph.m_size = sizeof(ph);
-                            ph.m_type = PKT_S2C_PLAYER_HP;
-                            ph.m_id = target_it->first;
-                            ph.m_hp = target_it->second.m_hp;
-                            for (auto& [id, session] : g_players) send_packet(&session, &ph, sizeof(ph));
-
-                            if (target_it->second.m_hp <= 0)
+                            if (now - target_it->second.m_last_hit_time >= std::chrono::duration<float>(PLAYER_INVULN_TIME))
                             {
-                                sc_packet_player_death pd;
-                                pd.m_size = sizeof(pd);
-                                pd.m_type = PKT_S2C_PLAYER_DEATH;
-                                pd.m_id = target_it->first;
-                                for (auto& [id, session] : g_players) send_packet(&session, &pd, sizeof(pd));
+                                target_it->second.m_hp -= MONSTER_ATTACK_DAMAGE;
+                                target_it->second.m_last_hit_time = now;
 
-                                g_pending_player_respawn.push_back({ target_it->first, std::chrono::steady_clock::now() 
-                                    + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float>(PLAYER_RESPAWN_TIME))});
+                                sc_packet_player_hp ph;
+                                ph.m_size = sizeof(ph);
+                                ph.m_type = PKT_S2C_PLAYER_HP;
+                                ph.m_id = target_it->first;
+                                ph.m_hp = target_it->second.m_hp;
+                                ph.m_damage = MONSTER_ATTACK_DAMAGE;
+                                for (auto& [id, session] : g_players) send_packet(&session, &ph, sizeof(ph));
+
+                                if (target_it->second.m_hp <= 0)
+                                {
+                                    sc_packet_player_death pd;
+                                    pd.m_size = sizeof(pd);
+                                    pd.m_type = PKT_S2C_PLAYER_DEATH;
+                                    pd.m_id = target_it->first;
+                                    for (auto& [id, session] : g_players) send_packet(&session, &pd, sizeof(pd));
+
+                                    g_pending_player_respawn.push_back({ target_it->first, std::chrono::steady_clock::now()
+                                        + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<float>(PLAYER_RESPAWN_TIME)) });
+                                }
                             }
                         }
 
