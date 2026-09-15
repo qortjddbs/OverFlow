@@ -61,6 +61,12 @@ public:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "NetSync")         // 추가
     UNetSyncComponent* NetSyncComponent;                                        // 추가
 
+    UPROPERTY(BlueprintReadOnly, Category = "Health")
+    float MaxHp = 100.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Health")
+    float CurrentHp = 100.0f;
+
     // 채굴 관련
     UFUNCTION()
     void OnLeftMousePressed();

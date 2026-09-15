@@ -104,6 +104,7 @@ private:
     void RemoveMonster(int32 Id);
     void HandleMonsterAttack(int32 MonsterId, int32 TargetPlayerId);
     void SpawnRemoteFireCosmetic(const FVector& MuzzleLocation, const FVector& Direction);
+    void UpdatePlayerHp(int32 Id, int32 NewHp, float Damage);
     void HandlePlayerDeath(int32 Id);
     void HandlePlayerRespawn(int32 Id, const FVector& Location, float Hp);
 

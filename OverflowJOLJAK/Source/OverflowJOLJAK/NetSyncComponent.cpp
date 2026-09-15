@@ -7,6 +7,7 @@
 #include "TimerManager.h"
 #include "..\..\Shared\Protocol.h"
 
+#include "MyCharacter.h"
 #include "EnemyCharacter.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -273,6 +274,13 @@ void UNetSyncComponent::ReceiveFromServer()
                 FVector(Pkt->m_dir_x, Pkt->m_dir_y, Pkt->m_dir_z));
             break;
         }
+        case PKT_S2C_PLAYER_HP:
+        {
+            const sc_packet_player_hp* Pkt =
+                reinterpret_cast<const sc_packet_player_hp*>(RecvBuffer.GetData());
+            UpdatePlayerHp(Pkt->m_id, Pkt->m_hp, Pkt->m_damage);
+            break;
+        }
         case PKT_S2C_PLAYER_DEATH:
         {
 			const sc_packet_player_death* Pkt =
@@ -471,6 +479,7 @@ void UNetSyncComponent::RemoveMonster(int32 Id)
 
 void UNetSyncComponent::HandleMonsterAttack(int32 MonsterId, int32 TargetPlayerId)
 {
+    
     // 실제 애니메이션/이펙트/피격 반응은 이 델리게이트를 구독하는 쪽(Blueprint 등)에서 처리.
     OnMonsterAttack.Broadcast(MonsterId, TargetPlayerId);
 
@@ -510,6 +519,17 @@ void UNetSyncComponent::SpawnRemoteFireCosmetic(const FVector& MuzzleLocation, c
     // 서버에 공격 보고를 하지 않는다 (원래 쏜 사람이 이미 보고했으므로 중복 방지).
 }
 
+void UNetSyncComponent::UpdatePlayerHp(int32 Id, int32 NewHp, float Damage)
+{
+    if (Id == MyId)
+    {
+        if (AMyCharacter* Ch = Cast<AMyCharacter>(GetOwner()))
+        {
+            Ch->CurrentHp = NewHp;   // 서버 값 그대로 반영
+        }
+    }
+}
+
 void UNetSyncComponent::HandlePlayerDeath(int32 Id)
 {
     if (Id == MyId)
@@ -526,10 +546,11 @@ void UNetSyncComponent::HandlePlayerRespawn(int32 Id, const FVector& Location, f
     if (Id == MyId)
     {
         // 내 캐릭터 부활
-        if (ACharacter* Ch = Cast<ACharacter>(GetOwner()))
+        if (AMyCharacter* Ch = Cast<AMyCharacter>(GetOwner()))
         {
             Ch->SetActorLocation(Location);
             Ch->GetCharacterMovement()->SetMovementMode(MOVE_Walking);   // 이동 복구
+            Ch->CurrentHp = Hp;
         }
     }
     else
