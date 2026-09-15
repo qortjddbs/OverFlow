@@ -117,6 +117,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Weapon")
     void EquipWeapon(AActor* WeaponToEquip);
 
+    UFUNCTION(BlueprintNativeEvent, Category = "Hp")
+    void PlayerHpChanged(float NewHp, float PreviousHp);
+    virtual void PlayerHpChanged_Implementation(float NewHp, float PreviousHp); 
+
 protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
     AActor* EquippedWeapon;

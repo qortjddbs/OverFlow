@@ -386,6 +386,8 @@ void UNetSyncComponent::RemovePlayer(int32 Id)
     }
 }
 
+
+
 void UNetSyncComponent::AddMonster(int32 Id, uint8 MonsterType, const FVector& Location, int32 Hp)
 {
     if (Monsters.Contains(Id)) return;   // 이미 스폰된 몬스터면 중복 스폰 방지 (재접속 시 스폰 패킷 다시 받는 경우 등)
@@ -525,7 +527,9 @@ void UNetSyncComponent::UpdatePlayerHp(int32 Id, int32 NewHp, float Damage)
     {
         if (AMyCharacter* Ch = Cast<AMyCharacter>(GetOwner()))
         {
+            const int32 PreviousHp = Ch->CurrentHp;
             Ch->CurrentHp = NewHp;   // 서버 값 그대로 반영
+            Ch->PlayerHpChanged(NewHp, PreviousHp);
         }
     }
 }
@@ -551,6 +555,7 @@ void UNetSyncComponent::HandlePlayerRespawn(int32 Id, const FVector& Location, f
             Ch->SetActorLocation(Location);
             Ch->GetCharacterMovement()->SetMovementMode(MOVE_Walking);   // 이동 복구
             Ch->CurrentHp = Hp;
+			Ch->PlayerHpChanged(Hp, 100.0f);   // HP UI 갱신
         }
     }
     else

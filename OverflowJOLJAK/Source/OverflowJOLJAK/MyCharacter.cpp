@@ -151,6 +151,11 @@ void AMyCharacter::EquipWeapon(AActor* WeaponToEquip)
     EquippedWeapon->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, TEXT("WeaponSocket_R"));
 }
 
+void AMyCharacter::PlayerHpChanged_Implementation(float NewHp, float PreviousHp)
+{
+    CurrentHp = NewHp;
+}
+
 void AMyCharacter::Fire(const FInputActionValue& Value)
 {
     //if (!bIsAiming)
