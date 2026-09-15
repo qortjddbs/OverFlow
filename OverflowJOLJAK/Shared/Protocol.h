@@ -124,6 +124,11 @@ struct sc_packet_player_respawn : PACKET_HEADER         // 3 + 20바이트
     float m_hp;
 };
 
+struct sc_packet_your_id : PACKET_HEADER
+{
+    int m_id;
+};
+
 #pragma pack(pop)   // 여기까지만 적용
 
 enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가기 때문에 타입(크기) 명시
@@ -146,5 +151,6 @@ enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가�
     PKT_S2C_BUILD = 16,
     PKT_S2C_PLAYER_HP = 17,
     PKT_S2C_PLAYER_DEATH = 18,
-    PKT_S2C_PLAYER_RESPAWN = 19
+    PKT_S2C_PLAYER_RESPAWN = 19,
+    PKT_S2C_YOUR_ID = 20
 };

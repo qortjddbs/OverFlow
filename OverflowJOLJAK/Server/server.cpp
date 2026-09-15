@@ -35,12 +35,12 @@ constexpr float PLAYER_MAX_HP = 100.f;
 constexpr float PLAYER_RESPAWN_TIME = 3.f;
 constexpr float PLAYER_SPAWN_X = 0.f;
 constexpr float PLAYER_SPAWN_Y = 0.f;
-constexpr float PLAYER_SPAWN_Z = 0.f;
+constexpr float PLAYER_SPAWN_Z = 200.f;
 
 // 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = 0.f;
-constexpr float MONSTER_SPAWN_POSITION_Y = 0.f;
-constexpr float MONSTER_SPAWN_POSITION_Z = 1000.f;
+constexpr float MONSTER_SPAWN_POSITION_Y = 90.f;
+constexpr float MONSTER_SPAWN_POSITION_Z = 50.f;
 constexpr float MONSTER_SPAWN_MIN_RADIUS = 300.f;
 constexpr float MONSTER_SPAWN_MAX_RADIUS = 1500.f;
 constexpr float MONSTER_CHASE_RANGE = 1000.f;
@@ -48,7 +48,7 @@ constexpr float MONSTER_ATTACK_RANGE = 100.f;
 constexpr float MONSTER_ATTACK_COOL = 1.f;
 constexpr float MONSTER_ATTACK_DAMAGE = 20.f;
 constexpr int MONSTER_HEARTBEAT = 100;
-constexpr float MONSTER_MOVE_SPEED = 10.f;
+constexpr float MONSTER_MOVE_SPEED = 20.f;
 constexpr float MONSTER_HIT_RADIUS = 60.f;   // 몸통 반지름 (X,Y 조준 허용 오차). 슬라임 크기에 맞게.
 constexpr float MONSTER_HIT_HEIGHT = 2000.f;  // 판정 기둥 높이. 서버-클라 Z 오차 흡수용으로 넉넉히.
 constexpr float MONSTER_HIT_Z_MARGIN = 1000.f;  // 기둥을 몬스터 z에서 아래로 얼마나 더 내릴지 (여유).
@@ -721,6 +721,12 @@ void accept_loop()
             disconnect(id);
             continue;
         }
+
+        sc_packet_your_id yi;
+        yi.m_size = sizeof(yi);
+        yi.m_type = PKT_S2C_YOUR_ID;
+        yi.m_id = p->m_id;
+        send_packet(p, &yi, sizeof(yi));
 
         add_player_notification(p);
         send_monster_list(p);

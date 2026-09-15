@@ -284,9 +284,15 @@ void UNetSyncComponent::ReceiveFromServer()
 		{
 			const sc_packet_player_respawn* Pkt =
 				reinterpret_cast<const sc_packet_player_respawn*>(RecvBuffer.GetData());
-			HandlePlayerRespawn(Pkt->m_id, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z));
+			HandlePlayerRespawn(Pkt->m_id, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z), Pkt->m_hp);
 			break;
 		}
+        case PKT_S2C_YOUR_ID:
+        {
+            const sc_packet_your_id* Pkt = reinterpret_cast<const sc_packet_your_id*>(RecvBuffer.GetData());
+            MyId = Pkt->m_id;
+            break;
+        }
 
         default:
             break;
@@ -455,7 +461,7 @@ void UNetSyncComponent::RemoveMonster(int32 Id)
             {
                 (*Found)->Destroy();
             }
-        }
+        } 
 
         Monsters.Remove(Id);
         MonsterTargetLocations.Remove(Id);
@@ -511,19 +517,19 @@ void UNetSyncComponent::HandlePlayerDeath(int32 Id)
         if (ACharacter* Ch = Cast<ACharacter>(GetOwner()))
         {
             Ch->GetCharacterMovement()->DisableMovement();   // 이동 정지
-            Ch->DisableInput(nullptr);                        // 입력 막기
         }
     }
 }
 
-void UNetSyncComponent::HandlePlayerRespawn(int32 Id, const FVector& Location)
+void UNetSyncComponent::HandlePlayerRespawn(int32 Id, const FVector& Location, float Hp)
 {
     if (Id == MyId)
     {
         // 내 캐릭터 부활
-        if (AActor* Owner = GetOwner())
+        if (ACharacter* Ch = Cast<ACharacter>(GetOwner()))
         {
-            Owner->SetActorLocation(Location);
+            Ch->SetActorLocation(Location);
+            Ch->GetCharacterMovement()->SetMovementMode(MOVE_Walking);   // 이동 복구
         }
     }
     else

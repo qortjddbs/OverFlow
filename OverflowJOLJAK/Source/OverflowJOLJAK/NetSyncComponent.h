@@ -105,7 +105,7 @@ private:
     void HandleMonsterAttack(int32 MonsterId, int32 TargetPlayerId);
     void SpawnRemoteFireCosmetic(const FVector& MuzzleLocation, const FVector& Direction);
     void HandlePlayerDeath(int32 Id);
-    void HandlePlayerRespawn(int32 Id, const FVector& Location);
+    void HandlePlayerRespawn(int32 Id, const FVector& Location, float Hp);
 
     void InterpolateRemotePlayers(float DeltaTime);
     void InterpolateMonsters(float DeltaTime);
