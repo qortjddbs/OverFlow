@@ -153,5 +153,11 @@ enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가�
     PKT_S2C_PLAYER_HP = 17,
     PKT_S2C_PLAYER_DEATH = 18,
     PKT_S2C_PLAYER_RESPAWN = 19,
-    PKT_S2C_YOUR_ID = 20
+    PKT_S2C_YOUR_ID = 20,
+    PKT_C2S_TERRAIN_EDIT = 21,
+    PKT_S2C_TERRAIN_EDIT = 22,
+    PKT_S2C_TERRAIN_CHUNK = 23,
+    PKT_C2S_TERRAIN_WANT = 24
 };
+
+#include "ProtocolTerrain.h"

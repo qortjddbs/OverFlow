@@ -79,10 +79,16 @@ void AMyCharacter::OnLeftMousePressed()
     if (!GetWorld()->LineTraceSingleByChannel(Hit, ViewLoc, End, ECC_Visibility, Params))
         return;
 
-    AVoxelWorld* VoxelWorld = Cast<AVoxelWorld>(Hit.GetActor());
-    if (!VoxelWorld) return;
+    if (!Cast<AVoxelWorld>(Hit.GetActor())) return;
 
-    UVoxelSphereTools::RemoveSphere(VoxelWorld, Hit.ImpactPoint, DigRadius);
+    // 바뀐 부분: 직접 파지 않고 서버에 요청
+    if (UNetSyncComponent* Net = FindComponentByClass<UNetSyncComponent>())
+    {
+        Net->RequestTerrainEdit(0, Hit.ImpactPoint, DigRadius);
+    }
+
+    // 파는 소리·이펙트는 여기서 바로 재생해도 된다
+    // 지형은 서버 응답을 받은 뒤에 바뀐다
 }
 
 void AMyCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -198,12 +204,10 @@ void AMyCharacter::OnDig()
 
 void AMyCharacter::ExecuteDig(const FVector& Location, float Radius)
 {
-    // 나중에 이 안을 서버 RPC로 교체
-    AVoxelWorld* VoxelWorld = Cast<AVoxelWorld>(
-        UGameplayStatics::GetActorOfClass(GetWorld(), AVoxelWorld::StaticClass()));
-    if (!VoxelWorld) return;
-
-    UVoxelSphereTools::RemoveSphere(VoxelWorld, Location, Radius);
+    if (UNetSyncComponent* Net = FindComponentByClass<UNetSyncComponent>())
+    {
+        Net->RequestTerrainEdit(0, Location, Radius);   // 0 = 파기
+    }
 }
 
 void AMyCharacter::OnBuild()
@@ -217,13 +221,13 @@ void AMyCharacter::OnBuild()
         ExecuteBuild(P, DigRadius);
     }
 }
+
 void AMyCharacter::ExecuteBuild(const FVector& Location, float Radius)
 {
-    AVoxelWorld* VoxelWorld = Cast<AVoxelWorld>(
-        UGameplayStatics::GetActorOfClass(GetWorld(), AVoxelWorld::StaticClass()));
-    if (!VoxelWorld) return;
-
-    UVoxelSphereTools::AddSphere(VoxelWorld, Location, Radius);
+    if (UNetSyncComponent* Net = FindComponentByClass<UNetSyncComponent>())
+    {
+        Net->RequestTerrainEdit(1, Location, Radius);
+    }
 }
 
 void AMyCharacter::StartAim()

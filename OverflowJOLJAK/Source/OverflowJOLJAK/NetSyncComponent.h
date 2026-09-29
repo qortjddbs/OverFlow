@@ -59,6 +59,23 @@ public:
     UPROPERTY(EditAnywhere, Category = "NetSync")
     TSubclassOf<AProjectile> RemoteFireProjectileClass;
 
+
+public:
+    // Op: 0 = 파기, 1 = 쌓기
+    // 로컬로 파지 않고 서버에 요청만 보낸다
+    void RequestTerrainEdit(uint8 Op, const FVector& CenterCm, float RadiusCm);
+
+private:
+    void HandleTerrainEdit(const struct sc_packet_terrain_edit* Pkt);
+    void ApplyEditToChunk(class AVoxelWorld* World, const FIntVector& Chunk,
+        uint8 Op, double Cx, double Cy, double Cz, double R);
+    class AVoxelWorld* GetVoxelWorld();
+
+    TMap<FIntVector, uint32>    TerrainVersions;   // 청크별 내 버전. 없으면 0 (= 원본 지형)
+    TSet<FIntVector>            StaleChunks;       // 중간 편집을 놓친 청크. 3단계에서 서버에 요청
+    TWeakObjectPtr<AVoxelWorld> CachedVoxelWorld;  // 매번 찾지 않도록 저장
+
+
 protected:
     virtual void BeginPlay() override;
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;

@@ -14,8 +14,12 @@
 #include <chrono>
 #include <cmath>
 #include <algorithm>
+#include <cstdio>
 
 #include "..\Shared\Protocol.h"
+
+#include "PlanetGen.h"
+#include "VoxelField.h"
 
 #pragma comment(lib, "Ws2_32.lib")      // winsock2.h의 진짜 코드 가져오기
 
@@ -53,6 +57,55 @@ constexpr float MONSTER_MOVE_SPEED = 20.f;
 constexpr float MONSTER_HIT_RADIUS = 60.f;   // 몸통 반지름 (X,Y 조준 허용 오차). 슬라임 크기에 맞게.
 constexpr float MONSTER_HIT_HEIGHT = 2000.f;  // 판정 기둥 높이. 서버-클라 Z 오차 흡수용으로 넉넉히.
 constexpr float MONSTER_HIT_Z_MARGIN = 1000.f;  // 기둥을 몬스터 z에서 아래로 얼마나 더 내릴지 (여유).
+
+//----------------------------------------------------------------
+FPlanetGen  g_planet("../Config/Planet.cfg");
+FVoxelField g_field(g_planet);        // 반드시 g_planet 아래에
+std::mutex  g_edit_order_lock;        // 편집 적용 + 방송 순서를 하나로 묶음
+
+// 클라가 RemoveSphere/AddSphere 에 쓰는 반경(cm)과 같게 맞출 것
+constexpr float EDIT_RADIUS_CM = 300.f;
+
+static void server_apply_edit(unsigned char op, float x, float y, float z)
+{
+    printf("[terrain] 받음 %s (%.1f, %.1f, %.1f) 계산 시작...\n",
+        op == 0 ? "DIG" : "BUILD", x, y, z);
+    fflush(stdout);
+
+    const auto t0 = std::chrono::steady_clock::now();
+
+    FEditResult R;
+    const bool bChanged = g_field.ApplyEdit(op, x, y, z, EDIT_RADIUS_CM,
+        [&](const FEditResult& In) { R = In; });
+
+    const double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+
+    const int vx = (int)std::floor(x / 100.f), vy = (int)std::floor(y / 100.f), vz = (int)std::floor(z / 100.f);
+    printf("[terrain] 완료 %.0fms  changed=%d seq=%u touched=%d  center=%.3f  edited_chunks=%zu\n",
+        ms, bChanged, R.Seq, R.NumTouched,
+        g_field.Value(vx, vy, vz), g_field.NumEditedChunks());
+    fflush(stdout);
+}
+
+//----------------------------------------------------------------
+
+void TestPlanet()
+{
+    FPlanetGen Gen("../Config/Planet.cfg");
+
+    if (!Gen.Ok())
+    {
+        printf("설정 로드 실패: %s\n", Gen.Error().c_str());
+        return;
+    }
+
+    printf("Radius = %.1f\n", Gen.Radius());
+    printf("(-805, 626, 9961) = %.6f  (-0.19 근처 기대)\n", Gen.Value(-805, 626, 9961));
+    printf("(-805, 626, 9962) = %.6f  ( 0.79 근처 기대)\n", Gen.Value(-805, 626, 9962));
+    fflush(stdout);
+}
+//----------------------------------------------------------------
 
 enum enumOperation      // 얘는 내부에서만 쓰이는 값이라 따로 명시하지 않음
 {
@@ -92,6 +145,10 @@ struct SESSION
     int m_visual = 0;       // 일단 임시로 생성. 나중가면 enum으로 따로 만들어야될듯. (디폴트 0 -> 기본 캐릭터)
 
     std::chrono::steady_clock::time_point m_last_hit_time{};
+
+	// ==============================================================
+    FClientTerrainState m_terrain;   // 이 클라가 가진 청크 버전
+	// ==============================================================
 };
 
 enum MonsterState
@@ -271,8 +328,73 @@ void broadcast_fire_event(SESSION* shooter, const cs_packet_player_fire* pkt)
     }
 }
 
+constexpr float MAX_EDIT_REACH_CM = 2000.f;   // 플레이어에서 편집 지점까지 최대 거리 (20m)
+
+//=============================================================================
+void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
+{
+    // ① 검증: 너무 먼 곳을 파려고 하면 거부 (치팅 방지)
+    const float dx = pkt->m_x - editor->m_x;
+    const float dy = pkt->m_y - editor->m_y;
+    const float dz = pkt->m_z - editor->m_z;
+    if (dx * dx + dy * dy + dz * dz > MAX_EDIT_REACH_CM * MAX_EDIT_REACH_CM)
+    {
+        printf("[terrain] 거부: 사거리 밖 (client %d)\n", editor->m_id);
+        fflush(stdout);
+        return;
+    }
+
+    // ② 이 락이 "편집 순서 = 방송 순서"를 보장한다
+    //    두 사람이 동시에 파도 모든 클라가 같은 순서로 받는다
+    std::lock_guard<std::mutex> ol(g_edit_order_lock);
+
+    // ③ 서버가 자기 지형에 먼저 적용하고 버전을 매긴다
+    FEditResult R;
+    const bool bChanged = g_field.ApplyEdit(pkt->m_op, pkt->m_x, pkt->m_y, pkt->m_z, pkt->m_radius,
+        [&](const FEditResult& In) { R = In; });
+
+    printf("[terrain] %s changed=%d seq=%u touched=%d\n",
+        pkt->m_op == 0 ? "DIG" : "BUILD", bChanged, R.Seq, R.NumTouched);
+    fflush(stdout);
+
+    if (!bChanged) return;   // 허공을 팠다든지 해서 바뀐 게 없으면 보낼 것도 없음
+
+    // ④ 방송 패킷 만들기
+    sc_packet_terrain_edit out{};
+    out.m_size = sizeof(out);
+    out.m_type = PKT_S2C_TERRAIN_EDIT;
+    out.m_op = R.Op;
+    out.m_x = R.Cx;          // 받은 좌표 그대로 (재계산하면 비트가 달라질 수 있음)
+    out.m_y = R.Cy;
+    out.m_z = R.Cz;
+    out.m_radius = R.Radius;
+    out.m_seq = R.Seq;
+    out.m_num_touched = static_cast<unsigned char>(R.NumTouched);
+    for (int i = 0; i < R.NumTouched; ++i)
+    {
+        out.m_touched[i].m_kx = R.Keys[i].x;
+        out.m_touched[i].m_ky = R.Keys[i].y;
+        out.m_touched[i].m_kz = R.Keys[i].z;
+        out.m_touched[i].m_version = R.Versions[i];
+    }
+
+    // ⑤ 본인 포함 전원에게 전송
+    std::lock_guard<std::mutex> lock(g_player_lock);
+    for (auto& [id, session] : g_players)
+    {
+        send_packet(&session, &out, sizeof(out));
+        FVoxelField::TrackEditSent(R, session.m_terrain);   // 이 클라가 받은 버전 기록
+    }
+}
+//=============================================================
+
 void broadcast_terrain_dig(SESSION* editor, const cs_packet_dig* pkt)
 {
+    {
+        std::lock_guard<std::mutex> ol(g_edit_order_lock);
+        server_apply_edit(0, pkt->m_x, pkt->m_y, pkt->m_z);
+    }
+
     TERRAIN_EDIT td;
     td.m_edit_type = DIG;
     td.m_x = pkt->m_x;
@@ -300,6 +422,11 @@ void broadcast_terrain_dig(SESSION* editor, const cs_packet_dig* pkt)
 
 void broadcast_terrain_build(SESSION* editor, const cs_packet_build* pkt)
 {
+    {
+        std::lock_guard<std::mutex> ol(g_edit_order_lock);
+        server_apply_edit(1, pkt->m_x, pkt->m_y, pkt->m_z);
+    }
+
     TERRAIN_EDIT td;
     td.m_edit_type = BUILD;
     td.m_x = pkt->m_x;
@@ -522,6 +649,12 @@ void process_packet(SESSION* p, int bytes_transferred)
         {
             cs_packet_build* pkt = reinterpret_cast<cs_packet_build*>(ptr);
             broadcast_terrain_build(p, pkt);
+            break;
+        }
+        case PKT_C2S_TERRAIN_EDIT:
+        {
+            cs_packet_terrain_edit* pkt = reinterpret_cast<cs_packet_terrain_edit*>(ptr);
+            handle_terrain_edit(p, pkt);
             break;
         }
         default:
@@ -939,6 +1072,8 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
 
 int main()
 {
+    TestPlanet();      // ← 추가
+
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0)
     {

@@ -14,6 +14,11 @@
 
 #include "Projectile.h"
 
+#include "Terrain/VoxelEditShared.h"
+#include "VoxelWorld.h"
+#include "VoxelTools/VoxelDataTools.h"
+#include "Kismet/GameplayStatics.h"
+
 UNetSyncComponent::UNetSyncComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
@@ -162,6 +167,112 @@ void UNetSyncComponent::SendFireEvent(const FVector& MuzzleLocation, const FVect
     }
 }
 
+void UNetSyncComponent::RequestTerrainEdit(uint8 Op, const FVector& CenterCm, float RadiusCm)
+{
+    cs_packet_terrain_edit Pkt;
+    Pkt.m_size = sizeof(Pkt);
+    Pkt.m_type = PKT_C2S_TERRAIN_EDIT;
+    Pkt.m_op = Op;
+    Pkt.m_x = static_cast<float>(CenterCm.X);
+    Pkt.m_y = static_cast<float>(CenterCm.Y);
+    Pkt.m_z = static_cast<float>(CenterCm.Z);
+    Pkt.m_radius = RadiusCm;
+
+    int32 BytesSent = 0;
+    if (!Socket || !Socket->Send(reinterpret_cast<const uint8*>(&Pkt), sizeof(Pkt), BytesSent))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("NetSyncComponent: terrain edit send failed"));
+    }
+}
+
+void UNetSyncComponent::HandleTerrainEdit(const sc_packet_terrain_edit* Pkt)
+{
+    AVoxelWorld* World = GetVoxelWorld();
+    if (!World) return;
+
+    // 서버 FVoxelField::ApplyEdit 과 "똑같이" 변환하고 자른다
+    // 여기가 서버와 한 글자라도 다르면 결과가 어긋난다
+    const double Cx = VoxelEdit::ToVoxel(Pkt->m_x);
+    const double Cy = VoxelEdit::ToVoxel(Pkt->m_y);
+    const double Cz = VoxelEdit::ToVoxel(Pkt->m_z);
+    double R = VoxelEdit::ToVoxel(Pkt->m_radius);
+    if (R > VoxelEdit::MAX_RADIUS_VOX) R = VoxelEdit::MAX_RADIUS_VOX;
+
+    const int32 N = FMath::Min<int32>(Pkt->m_num_touched, TerrainPkt::MAX_TOUCHED);
+    for (int32 i = 0; i < N; ++i)
+    {
+        const terrain_touched& T = Pkt->m_touched[i];
+        const FIntVector Key(T.m_kx, T.m_ky, T.m_kz);
+        uint32& Local = TerrainVersions.FindOrAdd(Key);   // 처음 보는 청크면 0
+
+        if (Local >= T.m_version)
+        {
+            continue;                                     // 이미 반영됨
+        }
+
+        if (Local + 1 == T.m_version)
+        {
+            // 바로 다음 버전: 적용하고 버전 올림
+            ApplyEditToChunk(World, Key, Pkt->m_op, Cx, Cy, Cz, R);
+            Local = T.m_version;
+        }
+        else
+        {
+            // 중간 편집을 놓침: 지금 적용하면 틀린 결과가 나오므로 표시만
+            StaleChunks.Add(Key);
+            UE_LOG(LogTemp, Warning, TEXT("[terrain] 청크 (%d,%d,%d) 버전 건너뜀: 내 %u, 서버 %u"),
+                Key.X, Key.Y, Key.Z, Local, T.m_version);
+        }
+    }
+}
+
+void UNetSyncComponent::ApplyEditToChunk(AVoxelWorld* World, const FIntVector& K,
+    uint8 Op, double Cx, double Cy, double Cz, double R)
+{
+    // 편집이 영향을 주는 전체 범위
+    int32_t MinX, MinY, MinZ, MaxX, MaxY, MaxZ;
+    VoxelEdit::SphereBounds(Cx, Cy, Cz, R, MinX, MinY, MinZ, MaxX, MaxY, MaxZ);
+
+    // 그중 이 청크에 걸친 부분만
+    const int32 C = VoxelEdit::CHUNK;
+    const int32 X0 = FMath::Max<int32>(MinX, K.X * C), X1 = FMath::Min<int32>(MaxX, K.X * C + C - 1);
+    const int32 Y0 = FMath::Max<int32>(MinY, K.Y * C), Y1 = FMath::Min<int32>(MaxY, K.Y * C + C - 1);
+    const int32 Z0 = FMath::Max<int32>(MinZ, K.Z * C), Z1 = FMath::Min<int32>(MaxZ, K.Z * C + C - 1);
+
+    const VoxelEdit::EOp EOp = static_cast<VoxelEdit::EOp>(Op);
+
+    for (int32 Z = Z0; Z <= Z1; ++Z)
+        for (int32 Y = Y0; Y <= Y1; ++Y)
+            for (int32 X = X0; X <= X1; ++X)
+            {
+                const FIntVector P(X, Y, Z);
+
+                // 현재 값 읽기
+                float Old = 0.f;
+                UVoxelDataTools::GetValue(Old, World, P);
+
+                // 서버와 같은 공식, 같은 저장 형식(int16)으로 새 값 계산
+                const int16_t OldQ = VoxelEdit::Quantize(Old);
+                const int16_t NewQ = VoxelEdit::ApplySphere(OldQ, X, Y, Z, Cx, Cy, Cz, R, EOp);
+
+                // 바뀐 곳만 쓰기
+                if (NewQ != OldQ)
+                {
+                    UVoxelDataTools::SetValue(World, P, VoxelEdit::Dequantize(NewQ));
+                }
+            }
+}
+
+AVoxelWorld* UNetSyncComponent::GetVoxelWorld()
+{
+    if (!CachedVoxelWorld.IsValid())
+    {
+        CachedVoxelWorld = Cast<AVoxelWorld>(
+            UGameplayStatics::GetActorOfClass(GetWorld(), AVoxelWorld::StaticClass()));
+    }
+    return CachedVoxelWorld.Get();
+}
+
 void UNetSyncComponent::SendPositionTick()
 {
     if (AActor* Owner = GetOwner())
@@ -299,6 +410,13 @@ void UNetSyncComponent::ReceiveFromServer()
         {
             const sc_packet_your_id* Pkt = reinterpret_cast<const sc_packet_your_id*>(RecvBuffer.GetData());
             MyId = Pkt->m_id;
+            break;
+        }
+        case PKT_S2C_TERRAIN_EDIT:
+        {
+            const sc_packet_terrain_edit* Pkt =
+                reinterpret_cast<const sc_packet_terrain_edit*>(RecvBuffer.GetData());
+            HandleTerrainEdit(Pkt);
             break;
         }
 
