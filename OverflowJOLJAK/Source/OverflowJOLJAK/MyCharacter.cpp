@@ -19,6 +19,8 @@
 
 #include "Blueprint/UserWidget.h"
 
+#include "Components/CapsuleComponent.h"
+
 // Sets default values
 AMyCharacter::AMyCharacter()
 {
@@ -224,6 +226,14 @@ void AMyCharacter::OnBuild()
 
 void AMyCharacter::ExecuteBuild(const FVector& Location, float Radius)
 {
+    const float CapR = GetCapsuleComponent()->GetScaledCapsuleRadius();
+    const float CapH = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+    const FVector Up = GetActorLocation().GetSafeNormal();
+    const FVector A = GetActorLocation() - Up * (CapH - CapR);
+    const FVector B = GetActorLocation() + Up * (CapH - CapR);
+    const FVector Closest = FMath::ClosestPointOnSegment(Location, A, B);
+    if (FVector::Dist(Location, Closest) < Radius + CapR) return;   // ³» ¸ö°ú °ãÄ§
+
     if (UNetSyncComponent* Net = FindComponentByClass<UNetSyncComponent>())
     {
         Net->RequestTerrainEdit(1, Location, Radius);

@@ -81,10 +81,11 @@ private:
     struct FChunk
     {
         uint32_t Version = 0;
-        int16_t  V[VoxelEdit::CHUNK_VOX];
+        int16_t  V[VoxelEdit::CHUNK_VOX];   // UNSET = 아직 계산 안 함 (생성기 값)
+
+        FChunk() { for (int i = 0; i < VoxelEdit::CHUNK_VOX; ++i) V[i] = VoxelEdit::UNSET; }
     };
 
-    void FillFromGenerator(const VoxelEdit::ChunkKey& Key, int16_t* Out) const;
     void SendChunkLocked(const VoxelEdit::ChunkKey& Key, const FChunk& C,
                          FClientTerrainState& Client, const FSendFn& Send) const;
 

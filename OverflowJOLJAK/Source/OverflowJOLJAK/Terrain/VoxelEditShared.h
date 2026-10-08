@@ -15,6 +15,12 @@ namespace VoxelEdit
     constexpr double  VOXEL_SIZE = 100.0;                     // AVoxelWorld 의 VoxelSize 와 일치시킬 것
     constexpr int16_t QMAX       = 32767;                     // FVoxelValue16::MAX_VOXELVALUE
 
+    // "아직 계산 안 함" 표시. 정상 값은 -32767 ~ 32767 이라 겹치지 않는다
+    // (플러그인 FVoxelValue::Special() 과 같은 값).
+    // 서버: 이 칸은 생성기로 계산하면 된다.
+    // 클라: 스냅샷에서 이 칸은 건드리지 않는다 (아무도 안 판 칸이라 양쪽 값이 같다).
+    constexpr int16_t UNSET      = -32768;
+
     // 반경 상한 (복셀). 16 이하면 한 편집이 건드리는 청크가 최대 2x2x2 = 8개.
     constexpr double  MAX_RADIUS_VOX = 16.0;
     constexpr int     MAX_TOUCHED    = 8;

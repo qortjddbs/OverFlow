@@ -19,6 +19,10 @@
 #include "VoxelTools/VoxelDataTools.h"
 #include "Kismet/GameplayStatics.h"
 
+#include "VoxelData/VoxelData.h"
+#include "VoxelData/VoxelDataImpl.inl"
+#include "VoxelTools/VoxelToolHelpers.h"
+
 UNetSyncComponent::UNetSyncComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
@@ -76,6 +80,10 @@ void UNetSyncComponent::ConnectToServer()
     {
         return;
     }
+    //===========================================
+    // TCP_NODELAY 옵션 켜기 (Nagle 알고리즘 끄기)
+    Socket->SetNoDelay(true);
+    //===========================================
 
     TSharedRef<FInternetAddr> Addr = SocketSubsystem->CreateInternetAddr();
     bool bIsValidIp = false;
@@ -169,6 +177,25 @@ void UNetSyncComponent::SendFireEvent(const FVector& MuzzleLocation, const FVect
 
 void UNetSyncComponent::RequestTerrainEdit(uint8 Op, const FVector& CenterCm, float RadiusCm)
 {
+    //===========================================
+	// 서버에 편집 요청을 보낼 때, 너무 자주 보내지 않도록 제한
+    const double Now = FPlatformTime::Seconds();
+
+    // ① 간격 제한: 0.1초 안에 또 오면 무시
+    if (Now - LastEditSendTime < EditInterval) return;
+
+    // ② 같은 자리 반복 무시: 직전과 같은 작업을 거의 같은 자리에 하면 보낼 필요 없음
+    if (Op == LastEditOp &&
+        FVector::DistSquared(CenterCm, LastEditCenter) < FMath::Square(RadiusCm * 0.3f))
+    {
+        return;
+    }
+
+    LastEditSendTime = Now;
+    LastEditCenter = CenterCm;
+    LastEditOp = Op;
+	//===========================================
+
     cs_packet_terrain_edit Pkt;
     Pkt.m_size = sizeof(Pkt);
     Pkt.m_type = PKT_C2S_TERRAIN_EDIT;
@@ -229,7 +256,6 @@ void UNetSyncComponent::HandleTerrainEdit(const sc_packet_terrain_edit* Pkt)
 void UNetSyncComponent::ApplyEditToChunk(AVoxelWorld* World, const FIntVector& K,
     uint8 Op, double Cx, double Cy, double Cz, double R)
 {
-    // 편집이 영향을 주는 전체 범위
     int32_t MinX, MinY, MinZ, MaxX, MaxY, MaxZ;
     VoxelEdit::SphereBounds(Cx, Cy, Cz, R, MinX, MinY, MinZ, MaxX, MaxY, MaxZ);
 
@@ -238,29 +264,29 @@ void UNetSyncComponent::ApplyEditToChunk(AVoxelWorld* World, const FIntVector& K
     const int32 X0 = FMath::Max<int32>(MinX, K.X * C), X1 = FMath::Min<int32>(MaxX, K.X * C + C - 1);
     const int32 Y0 = FMath::Max<int32>(MinY, K.Y * C), Y1 = FMath::Min<int32>(MaxY, K.Y * C + C - 1);
     const int32 Z0 = FMath::Max<int32>(MinZ, K.Z * C), Z1 = FMath::Min<int32>(MaxZ, K.Z * C + C - 1);
+    if (X0 > X1 || Y0 > Y1 || Z0 > Z1) return;
 
+    const FVoxelIntBox Bounds(FIntVector(X0, Y0, Z0), FIntVector(X1 + 1, Y1 + 1, Z1 + 1));
     const VoxelEdit::EOp EOp = static_cast<VoxelEdit::EOp>(Op);
 
-    for (int32 Z = Z0; Z <= Z1; ++Z)
-        for (int32 Y = Y0; Y <= Y1; ++Y)
-            for (int32 X = X0; X <= X1; ++X)
+    FVoxelData& Data = World->GetData();
+    {
+        TVoxelScopeLock<EVoxelLockType::Write> Lock(Data, Bounds, FName(TEXT("NetTerrainEdit")));
+
+        TVoxelDataImpl<> Impl(Data, false, false);
+        Impl.Set<FVoxelValue>(Bounds, [&](int32 X, int32 Y, int32 Z, FVoxelValue& Value)
             {
-                const FIntVector P(X, Y, Z);
-
-                // 현재 값 읽기
-                float Old = 0.f;
-                UVoxelDataTools::GetValue(Old, World, P);
-
-                // 서버와 같은 공식, 같은 저장 형식(int16)으로 새 값 계산
-                const int16_t OldQ = VoxelEdit::Quantize(Old);
+                // 저장된 int16 을 그대로 사용 (float 변환 없음 → 서버와 비트 단위로 같음)
+                const int16_t OldQ = Value.GetStorage();
                 const int16_t NewQ = VoxelEdit::ApplySphere(OldQ, X, Y, Z, Cx, Cy, Cz, R, EOp);
-
-                // 바뀐 곳만 쓰기
                 if (NewQ != OldQ)
                 {
-                    UVoxelDataTools::SetValue(World, P, VoxelEdit::Dequantize(NewQ));
+                    Value = FVoxelValue::InternalConstructor(NewQ);
                 }
-            }
+            });
+    }
+
+    FVoxelToolHelpers::UpdateWorld(World, Bounds);
 }
 
 AVoxelWorld* UNetSyncComponent::GetVoxelWorld()
@@ -727,7 +753,6 @@ void UNetSyncComponent::InterpolateRemotePlayers(float DeltaTime)
         }
     }
 }
-
 void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
 {
     const float SyncInterval = 1.0f / 30.0f;   // 서버 동기화 간격

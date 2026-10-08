@@ -20,20 +20,12 @@ float FVoxelField::Value(int32_t vx, int32_t vy, int32_t vz) const
         if (It != Chunks.end())
         {
             const int i = LocalIndex(vx - K.x * CHUNK, vy - K.y * CHUNK, vz - K.z * CHUNK);
-            return Dequantize(It->second->V[i]);
+            const int16_t q = It->second->V[i];
+            if (q != UNSET) return Dequantize(q);
         }
     }
     // 편집 안 된 곳: 생성기 값을 저장 형식으로 양자화 (클라 플러그인과 같은 경로)
     return Dequantize(Quantize(Gen.Value(vx, vy, vz)));
-}
-
-void FVoxelField::FillFromGenerator(const ChunkKey& K, int16_t* Out) const
-{
-    const int32_t bx = K.x * CHUNK, by = K.y * CHUNK, bz = K.z * CHUNK;
-    for (int z = 0; z < CHUNK; ++z)
-    for (int y = 0; y < CHUNK; ++y)
-    for (int x = 0; x < CHUNK; ++x)
-        Out[LocalIndex(x, y, z)] = Quantize(Gen.Value(bx + x, by + y, bz + z));
 }
 
 // ============================================================================ 편집
@@ -51,36 +43,51 @@ bool FVoxelField::ApplyEdit(uint8_t Op, float Cx, float Cy, float Cz, float Radi
     int32_t minX, minY, minZ, maxX, maxY, maxZ;
     SphereBounds(cx, cy, cz, r, minX, minY, minZ, maxX, maxY, maxZ);
 
+    const int32_t sx = maxX - minX + 1, sy = maxY - minY + 1, sz = maxZ - minZ + 1;
+
     const ChunkKey K0 = KeyOf(minX, minY, minZ);
     const ChunkKey K1 = KeyOf(maxX, maxY, maxZ);
 
-    // 1) 락 밖에서 없는 청크를 생성기로 미리 채운다 (15옥타브 x 32768 이라 무겁다)
-    std::vector<std::pair<ChunkKey, std::unique_ptr<FChunk>>> Fresh;
+    auto BoxIndex = [&](int32_t x, int32_t y, int32_t z)
+    {
+        return (static_cast<size_t>(z - minZ) * sy + (y - minY)) * sx + (x - minX);
+    };
+
+    // 1) 이미 값이 있는 칸은 복사해 오고 (shared_lock, 짧음)
+    std::vector<int16_t> GenBox(static_cast<size_t>(sx) * sy * sz, UNSET);
     {
         std::shared_lock<std::shared_mutex> Lock(Mutex);
         for (int32_t kz = K0.z; kz <= K1.z; ++kz)
         for (int32_t ky = K0.y; ky <= K1.y; ++ky)
         for (int32_t kx = K0.x; kx <= K1.x; ++kx)
         {
-            const ChunkKey K{ kx, ky, kz };
-            if (Chunks.find(K) == Chunks.end())
-                Fresh.emplace_back(K, nullptr);
+            auto It = Chunks.find(ChunkKey{ kx, ky, kz });
+            if (It == Chunks.end()) continue;
+            const FChunk& C = *It->second;
+
+            const int32_t bx = kx * CHUNK, by = ky * CHUNK, bz = kz * CHUNK;
+            const int32_t x0 = std::max(minX, bx), x1 = std::min(maxX, bx + CHUNK - 1);
+            const int32_t y0 = std::max(minY, by), y1 = std::min(maxY, by + CHUNK - 1);
+            const int32_t z0 = std::max(minZ, bz), z1 = std::min(maxZ, bz + CHUNK - 1);
+
+            for (int32_t z = z0; z <= z1; ++z)
+            for (int32_t y = y0; y <= y1; ++y)
+            for (int32_t x = x0; x <= x1; ++x)
+                GenBox[BoxIndex(x, y, z)] = C.V[LocalIndex(x - bx, y - by, z - bz)];
         }
     }
-    for (auto& F : Fresh)
+
+    // 2) 값이 없는 칸만 락 밖에서 생성기로 계산 (같은 자리를 또 파면 거의 0)
+    for (int32_t z = minZ; z <= maxZ; ++z)
+    for (int32_t y = minY; y <= maxY; ++y)
+    for (int32_t x = minX; x <= maxX; ++x)
     {
-        F.second.reset(new FChunk());
-        FillFromGenerator(F.first, F.second->V);
+        int16_t& g = GenBox[BoxIndex(x, y, z)];
+        if (g == UNSET) g = Quantize(Gen.Value(x, y, z));
     }
 
-    // 2) 적용 + 순번 + 브로드캐스트를 한 번의 unique_lock 안에서
+    // 3) 적용 + 순번 + 브로드캐스트를 한 번의 unique_lock 안에서
     std::unique_lock<std::shared_mutex> Lock(Mutex);
-
-    for (auto& F : Fresh)
-    {
-        if (Chunks.find(F.first) == Chunks.end())   // 그 사이 다른 워커가 넣었을 수 있다
-            Chunks.emplace(F.first, std::move(F.second));
-    }
 
     FEditResult R;
     R.Op = Op; R.Cx = Cx; R.Cy = Cy; R.Cz = Cz; R.Radius = Radius;
@@ -90,7 +97,11 @@ bool FVoxelField::ApplyEdit(uint8_t Op, float Cx, float Cy, float Cz, float Radi
     for (int32_t kx = K0.x; kx <= K1.x; ++kx)
     {
         const ChunkKey K{ kx, ky, kz };
-        FChunk& C = *Chunks[K];
+
+        auto It = Chunks.find(K);
+        const bool bNew = (It == Chunks.end());
+        if (bNew) It = Chunks.emplace(K, std::unique_ptr<FChunk>(new FChunk())).first;
+        FChunk& C = *It->second;
 
         const int32_t bx = kx * CHUNK, by = ky * CHUNK, bz = kz * CHUNK;
         const int32_t x0 = std::max(minX, bx), x1 = std::min(maxX, bx + CHUNK - 1);
@@ -103,6 +114,7 @@ bool FVoxelField::ApplyEdit(uint8_t Op, float Cx, float Cy, float Cz, float Radi
         for (int32_t x = x0; x <= x1; ++x)
         {
             int16_t& v = C.V[LocalIndex(x - bx, y - by, z - bz)];
+            if (v == UNSET) v = GenBox[BoxIndex(x, y, z)];   // 계산한 생성기 값을 저장해 두고 다음에 재사용
             const int16_t n = ApplySphere(v, x, y, z, cx, cy, cz, r, static_cast<EOp>(Op));
             if (n != v) { v = n; bChanged = true; }
         }
@@ -117,9 +129,9 @@ bool FVoxelField::ApplyEdit(uint8_t Op, float Cx, float Cy, float Cz, float Radi
                 ++R.NumTouched;
             }
         }
-        else if (C.Version == 0)
+        else if (bNew)
         {
-            Chunks.erase(K);   // 방금 만들었는데 안 바뀌었으면 메모리 낭비
+            Chunks.erase(It);   // 방금 만들었는데 안 바뀌었으면 메모리 낭비
         }
     }
 

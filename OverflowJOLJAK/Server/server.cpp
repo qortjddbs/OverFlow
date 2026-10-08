@@ -331,6 +331,45 @@ void broadcast_fire_event(SESSION* shooter, const cs_packet_player_fire* pkt)
 constexpr float MAX_EDIT_REACH_CM = 2000.f;   // 플레이어에서 편집 지점까지 최대 거리 (20m)
 
 //=============================================================================
+constexpr float CHAR_RADIUS_CM = 45.f;   // 캡슐 반지름 (클라 설정과 맞출 것)
+constexpr float CHAR_HALF_HEIGHT_CM = 90.f;   // 캡슐 반높이
+
+// 점 P 에서 선분 AB 까지 거리의 제곱
+static float dist_sq_point_segment(float px, float py, float pz,
+    float ax, float ay, float az,
+    float bx, float by, float bz)
+{
+    const float abx = bx - ax, aby = by - ay, abz = bz - az;
+    const float apx = px - ax, apy = py - ay, apz = pz - az;
+    const float len2 = abx * abx + aby * aby + abz * abz;
+    float t = len2 > 0.f ? (apx * abx + apy * aby + apz * abz) / len2 : 0.f;
+    t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
+    const float dx = apx - abx * t, dy = apy - aby * t, dz = apz - abz * t;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+// 쌓을 구가 어떤 플레이어 캡슐과 겹치는가
+static bool is_build_blocked(float cx, float cy, float cz, float radius)
+{
+    std::lock_guard<std::mutex> lock(g_player_lock);
+    for (auto& [id, s] : g_players)
+    {
+        // 구체 행성: 캡슐의 "위" 는 행성 중심에서 바깥 방향
+        const float len = std::sqrt(s.m_x * s.m_x + s.m_y * s.m_y + s.m_z * s.m_z);
+        if (len < 1.f) continue;
+        const float ux = s.m_x / len, uy = s.m_y / len, uz = s.m_z / len;
+        const float h = CHAR_HALF_HEIGHT_CM - CHAR_RADIUS_CM;   // 캡슐 중심선 반길이
+
+        const float d2 = dist_sq_point_segment(cx, cy, cz,
+            s.m_x - ux * h, s.m_y - uy * h, s.m_z - uz * h,
+            s.m_x + ux * h, s.m_y + uy * h, s.m_z + uz * h);
+
+        const float limit = radius + CHAR_RADIUS_CM;
+        if (d2 < limit * limit) return true;
+    }
+    return false;
+}
+
 void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
 {
     // ① 검증: 너무 먼 곳을 파려고 하면 거부 (치팅 방지)
@@ -341,6 +380,12 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
     {
         printf("[terrain] 거부: 사거리 밖 (client %d)\n", editor->m_id);
         fflush(stdout);
+        return;
+    }
+    // 쌓기: 캐릭터와 겹치면 거부 (땅이 캐릭터를 덮어버리는 것 방지)
+    if (pkt->m_op == 1 && is_build_blocked(pkt->m_x, pkt->m_y, pkt->m_z, pkt->m_radius))
+    {
+        printf("[terrain] 거부: 캐릭터와 겹침\n"); fflush(stdout);
         return;
     }
 
@@ -831,6 +876,12 @@ void accept_loop()
         {
             continue;
         }
+
+		//=========================================================================================================
+		// TCP_NODELAY 옵션 켜기 (Nagle 알고리즘 끄기)
+        BOOL no_delay = TRUE;
+        setsockopt(c_socket, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&no_delay), sizeof(no_delay));
+		//=========================================================================================================
 
         char addr_str[INET_ADDRSTRLEN] = {};
         inet_ntop(AF_INET, &client_addr.sin_addr, addr_str, sizeof(addr_str));      // inet_ntop -> 소켓에 저장된 IP주소를 문자열로 바꿔주는 함수
