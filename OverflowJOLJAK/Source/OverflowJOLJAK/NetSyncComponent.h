@@ -79,7 +79,7 @@ private:
     double  LastEditSendTime = 0.0;
     FVector LastEditCenter = FVector(FLT_MAX);
     uint8   LastEditOp = 255;
-    static constexpr double EditInterval = 0.1;   // 초당 최대 10번
+    static constexpr double EditInterval = 0.05;   // 초당 최대 10번
 
 
 protected:

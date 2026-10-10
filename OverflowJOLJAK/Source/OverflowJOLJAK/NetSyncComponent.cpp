@@ -184,12 +184,12 @@ void UNetSyncComponent::RequestTerrainEdit(uint8 Op, const FVector& CenterCm, fl
     // ① 간격 제한: 0.1초 안에 또 오면 무시
     if (Now - LastEditSendTime < EditInterval) return;
 
-    // ② 같은 자리 반복 무시: 직전과 같은 작업을 거의 같은 자리에 하면 보낼 필요 없음
-    if (Op == LastEditOp &&
-        FVector::DistSquared(CenterCm, LastEditCenter) < FMath::Square(RadiusCm * 0.3f))
-    {
-        return;
-    }
+    //// ② 같은 자리 반복 무시: 직전과 같은 작업을 거의 같은 자리에 하면 보낼 필요 없음
+    //if (Op == LastEditOp &&
+    //    FVector::DistSquared(CenterCm, LastEditCenter) < FMath::Square(RadiusCm * 0.3f))
+    //{
+    //    return;
+    //}
 
     LastEditSendTime = Now;
     LastEditCenter = CenterCm;

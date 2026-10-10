@@ -206,9 +206,13 @@ void AMyCharacter::OnDig()
 
 void AMyCharacter::ExecuteDig(const FVector& Location, float Radius)
 {
+    const FVector Up = Location.GetSafeNormal();
+    const float Lift = FMath::Max(Radius - DigDepth, 0.f);
+    const FVector Center = Location + Up * Lift;
+
     if (UNetSyncComponent* Net = FindComponentByClass<UNetSyncComponent>())
     {
-        Net->RequestTerrainEdit(0, Location, Radius);   // 0 = ÆÄ±â
+        Net->RequestTerrainEdit(0, Center, Radius);
     }
 }
 

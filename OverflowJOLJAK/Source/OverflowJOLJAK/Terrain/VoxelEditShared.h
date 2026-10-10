@@ -15,14 +15,16 @@ namespace VoxelEdit
     constexpr double  VOXEL_SIZE = 100.0;                     // AVoxelWorld 의 VoxelSize 와 일치시킬 것
     constexpr int16_t QMAX       = 32767;                     // FVoxelValue16::MAX_VOXELVALUE
 
+    // 편집 세기 (0~1). 1 = 한 번에 끝까지, 0.3 = 한 번에 30%만
+    constexpr float EDIT_STRENGTH = 0.1f;
+
     // "아직 계산 안 함" 표시. 정상 값은 -32767 ~ 32767 이라 겹치지 않는다
     // (플러그인 FVoxelValue::Special() 과 같은 값).
     // 서버: 이 칸은 생성기로 계산하면 된다.
     // 클라: 스냅샷에서 이 칸은 건드리지 않는다 (아무도 안 판 칸이라 양쪽 값이 같다).
     constexpr int16_t UNSET      = -32768;
 
-    // 반경 상한 (복셀). 16 이하면 한 편집이 건드리는 청크가 최대 2x2x2 = 8개.
-    constexpr double  MAX_RADIUS_VOX = 16.0;
+    constexpr double  MAX_RADIUS_VOX = 13.0;
     constexpr int     MAX_TOUCHED    = 8;
 
     enum class EOp : uint8_t { Dig = 0, Build = 1 };
@@ -95,25 +97,51 @@ namespace VoxelEdit
     inline double ToVoxel(float WorldCm) { return static_cast<double>(WorldCm) / VOXEL_SIZE; }
 
     // 한 복셀에 구체 편집을 적용. 입력/출력 모두 저장 형식(int16).
-    //   파기: max(old, -sd)   채우기: min(old, sd)   (음수 = 속)
+    //
+    // 플러그인 FVoxelSphereToolsImpl::SphereEdit (RemoveSphere / AddSphere) 와 같은 공식.
+    //   - 반경-2 안쪽: 완전히 비움(파기) / 완전히 채움(쌓기)
+    //   - 반경±2 띠: clamp(반경 - 거리, -2, 2) / 2  (기울기 0.5 → 표면 주변 값이 완만해 조명이 매끄러움)
+    //   - 합치기: 파기 = max, 쌓기 = min  (FVoxelUtilities::MergeAsset)
+    // float 계산 단계까지 플러그인과 맞췄다. 바꾸면 서버/클라 결과가 달라진다.
     inline int16_t ApplySphere(int16_t OldQ,
                                int32_t vx, int32_t vy, int32_t vz,
                                double cx, double cy, double cz, double r, EOp Op)
     {
+        const bool  bAdd   = (Op == EOp::Build);
+        const float Radius = static_cast<float>(r);
+
+        const float Plus2   = Radius + 2.f;
+        const float Minus2  = (Radius - 2.f > 0.f) ? (Radius - 2.f) : 0.f;
+        const float SqPlus2  = Plus2 * Plus2;
+        const float SqMinus2 = Minus2 * Minus2;
+
+        // 플러그인: FVector(X - Position.X, ...).SizeSquared() 를 float 에 담음
         const double dx = vx - cx;
         const double dy = vy - cy;
         const double dz = vz - cz;
-        const double d2 = dx * dx;
-        const double e2 = dy * dy;
-        const double f2 = dz * dz;
-        const float  sd = static_cast<float>(std::sqrt(d2 + e2 + f2) - r);
+        const float  SqDist = static_cast<float>(dx * dx + dy * dy + dz * dz);
 
-        const float oldV = Dequantize(OldQ);
-        const float newV = (Op == EOp::Dig)
-            ? ((oldV > -sd) ? oldV : -sd)
-            : ((oldV <  sd) ? oldV :  sd);
+        if (SqDist > SqPlus2) return OldQ;                    // 영향 범위 밖
 
-        return Quantize(newV);
+        if (SqDist <= SqMinus2)
+        {
+            const float OldF = Dequantize(OldQ);
+            const float TgtF = bAdd ? -1.f : 1.f;
+            return Quantize(OldF + (TgtF - OldF) * EDIT_STRENGTH);
+        }
+
+        const float Dist = std::sqrt(SqDist);
+        float t = Radius - Dist;
+        t = (t < -2.f) ? -2.f : ((t > 2.f) ? 2.f : t);
+        const int16_t NewQ = Quantize(t / 2.f * (bAdd ? -1.f : 1.f));
+
+        const int16_t Merged = bAdd ? (OldQ < NewQ ? OldQ : NewQ)
+            : (OldQ > NewQ ? OldQ : NewQ);
+
+        // 세기만큼만 목표 쪽으로 이동
+        const float OldF = Dequantize(OldQ);
+        const float TgtF = Dequantize(Merged);
+        return Quantize(OldF + (TgtF - OldF) * EDIT_STRENGTH);
     }
 
     // 편집이 영향을 줄 수 있는 복셀 박스 (양끝 포함).

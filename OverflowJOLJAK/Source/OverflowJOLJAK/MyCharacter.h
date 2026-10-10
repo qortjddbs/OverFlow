@@ -75,10 +75,13 @@ public:
     float TraceDistance = 1000.f;
 
     UPROPERTY(EditAnywhere, Category = "Voxel")
-    float DigRadius = 100.f;
+    float DigRadius = 200.f;
 
     UPROPERTY(VisibleAnywhere, Category = "Voxel")
     class UVoxelSimpleInvokerComponent* VoxelInvoker;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain")
+    float DigDepth = 100.f;   // 한 번에 파이는 최대 깊이 (cm)
 
     // 쿨타임
     float LastVoxelTime = 0.f;
