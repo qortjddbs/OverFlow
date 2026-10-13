@@ -43,9 +43,9 @@ constexpr float PLAYER_SPAWN_Z = 200.f;
 constexpr float PLAYER_INVULN_TIME = 1.f;
 
 // 몬스터 관련 상수들
-constexpr float MONSTER_SPAWN_POSITION_X = 0.f;
-constexpr float MONSTER_SPAWN_POSITION_Y = 90.f;
-constexpr float MONSTER_SPAWN_POSITION_Z = 50.f;
+constexpr float MONSTER_SPAWN_POSITION_X = -476.030103f;
+constexpr float MONSTER_SPAWN_POSITION_Y = 900.403703f;
+constexpr float MONSTER_SPAWN_POSITION_Z = 50614.03558f;
 constexpr float MONSTER_SPAWN_MIN_RADIUS = 300.f;
 constexpr float MONSTER_SPAWN_MAX_RADIUS = 1500.f;
 constexpr float MONSTER_CHASE_RANGE = 1000.f;
