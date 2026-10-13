@@ -21,14 +21,39 @@
 
 #include "Components/CapsuleComponent.h"
 
+
+// 2026-10-13 
+#include "Engine/LocalPlayer.h"
+#include "Math/RotationMatrix.h"
+
 // Sets default values
 AMyCharacter::AMyCharacter()
 {
-	bUseControllerRotationYaw = false;
+	//bUseControllerRotationYaw = false;
 
-	GetCharacterMovement()->bOrientRotationToMovement = true;
-	GetCharacterMovement()->RotationRate = FRotator(0.f, 720.f, 0.f);
-	GetCharacterMovement()->MaxWalkSpeed = 500.f;
+	//GetCharacterMovement()->bOrientRotationToMovement = true;
+	//GetCharacterMovement()->RotationRate = FRotator(0.f, 720.f, 0.f);
+	//GetCharacterMovement()->MaxWalkSpeed = 500.f;
+
+    // 2026-10-13
+    // Tick 함수가 실행될 수 있도록 설정
+    PrimaryActorTick.bCanEverTick = true;
+
+    // 몸의 회전은 행성 기준으로 직접 처리
+    bUseControllerRotationPitch = false;
+    bUseControllerRotationYaw = false;
+    bUseControllerRotationRoll = false;
+
+    UCharacterMovementComponent* Movement = GetCharacterMovement();
+
+    Movement->bOrientRotationToMovement = false;
+    Movement->bUseControllerDesiredRotation = false;
+
+    Movement->GravityScale = 1.f;
+    Movement->MaxWalkSpeed = 500.f;
+    Movement->JumpZVelocity = 500.f;
+    Movement->AirControl = 0.35f;
+    // ===============================================
 
 	NetSyncComponent = CreateDefaultSubobject<UNetSyncComponent>(TEXT("NetSyncComponent"));     // 추가
 
@@ -41,12 +66,24 @@ void AMyCharacter::BeginPlay()
 {
     Super::BeginPlay();
 
+	// 2026-10-13 
+    bUseControllerRotationPitch = false;
+    bUseControllerRotationYaw = false;
+    bUseControllerRotationRoll = false;
+
+    GetCharacterMovement()->bOrientRotationToMovement = true;
+    GetCharacterMovement()->bUseControllerDesiredRotation = false;
+    GetCharacterMovement()->RotationRate = FRotator(0.f, 720.f, 0.f);
+
     if (APlayerController* PC = Cast<APlayerController>(GetController()))
     {
-        if (UEnhancedInputLocalPlayerSubsystem* Subsystem =
-            ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer()))
+        if (ULocalPlayer* LocalPlayer = PC->GetLocalPlayer())
         {
-            Subsystem->AddMappingContext(IMC_Link, 0);
+            if (UEnhancedInputLocalPlayerSubsystem* Subsystem =
+                ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer()))
+            {
+                Subsystem->AddMappingContext(IMC_Link, 0);
+            }
         }
     }
 
@@ -61,8 +98,139 @@ void AMyCharacter::BeginPlay()
         }
     }
 
+    // 2026-10-13 BP_Astronaut에 이미 있는 SpringArm과 Camera를 찾아 설정
+    // BP_Astronaut에 이미 있는 SpringArm을 찾습니다.
+    PlanetCameraArm = FindComponentByClass<USpringArmComponent>();
+
+    if (PlanetCameraArm)
+    {
+        PlanetCameraArm->bUsePawnControlRotation = false;
+
+        // 캐릭터의 회전을 따라가도록 합니다.
+        PlanetCameraArm->SetUsingAbsoluteRotation(true);
+        PlanetCameraArm->bInheritPitch = true;
+        PlanetCameraArm->bInheritYaw = true;
+        PlanetCameraArm->bInheritRoll = true;
+
+        // 확인할 때는 카메라 지연을 끔
+        PlanetCameraArm->bEnableCameraLag = false;
+        PlanetCameraArm->bEnableCameraRotationLag = false;
+       
+    }
+    else
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("Planet movement: SpringArm component was not found.")
+        );
+    }
+
+    if (UCameraComponent* Camera =
+        FindComponentByClass<UCameraComponent>())
+    {
+        Camera->bUsePawnControlRotation = false;
+    }
+
+    if (IsLocallyControlled())
+    {
+        UpdatePlanetOrientation();
+    }
 }
 
+// 2026-10-13 Tick, UpdatePlanetOrientation() 추가
+void AMyCharacter::Tick(float DeltaSeconds)
+{
+    Super::Tick(DeltaSeconds);
+
+    // 현재 직접 조작하는 캐릭터만 갱신
+    if (!IsLocallyControlled())
+    {
+        return;
+    }
+
+    UpdatePlanetOrientation();
+}
+void AMyCharacter::UpdatePlanetOrientation()
+{
+    const FVector FromCenter = GetActorLocation() - PlanetCenter;
+
+    if (FromCenter.IsNearlyZero())
+    {
+        return;
+    }
+
+    const FVector NewUp = FromCenter.GetSafeNormal();
+
+    if (!bPlanetViewInitialized)
+    {
+        // 처음에는 현재 시점 방향을 사용
+        const FVector InitialForward = Controller ? Controller->GetControlRotation().Vector() : GetActorForwardVector();
+
+        PlanetViewForward =
+            FVector::VectorPlaneProject(
+                InitialForward,
+                NewUp
+            ).GetSafeNormal();
+
+        if (PlanetViewForward.IsNearlyZero())
+        {
+            FVector UnusedAxis;
+            NewUp.FindBestAxisVectors(
+                PlanetViewForward,
+                UnusedAxis
+            );
+        }
+
+        bPlanetViewInitialized = true;
+    }
+    else
+    {
+        // 행성 표면을 따라 이동한 만큼 카메라 기준을 보정
+        const FQuat SurfaceChange = FQuat::FindBetweenNormals(PlanetUp, NewUp);
+
+        PlanetViewForward = SurfaceChange.RotateVector(PlanetViewForward);
+
+        PlanetViewForward = FVector::VectorPlaneProject(PlanetViewForward, NewUp).GetSafeNormal();
+
+        if (PlanetViewForward.IsNearlyZero())
+        {
+            FVector UnusedAxis;
+            NewUp.FindBestAxisVectors(PlanetViewForward,UnusedAxis);
+        }
+    }
+
+    PlanetUp = NewUp;
+
+    GetCharacterMovement()->SetGravityDirection(-PlanetUp);
+
+    UpdatePlanetCamera();
+}
+
+void AMyCharacter::UpdatePlanetCamera()
+{
+    if (!bPlanetViewInitialized)
+    {
+        return;
+    }
+
+    const FQuat SurfaceView = FRotationMatrix::MakeFromXZ(PlanetViewForward, PlanetUp).ToQuat();
+
+    if (PlanetCameraArm)
+    {
+        const FQuat PitchRotation = FRotator(PlanetCameraPitch, 0.f, 0.f).Quaternion();
+
+        PlanetCameraArm->SetWorldRotation(SurfaceView * PitchRotation);
+    }
+
+    // 조준 중에만 몸이 시점 방향을 따라간다
+    // 카메라의 위아래 각도는 몸에 적용하지 않음
+    if (bIsAiming)
+    {
+        SetActorRotation(SurfaceView);
+    }
+}
+// ===============================================
 void AMyCharacter::OnLeftMousePressed()
 {
     APlayerController* PC = Cast<APlayerController>(GetController());
@@ -109,28 +277,48 @@ void AMyCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
     }
 }
 
+// 2026-10-13 2d 이동에서 행성 중심 움직임으로 수정
 void AMyCharacter::Move(const FInputActionValue& Value)
 {
-    FVector2D MoveValue = Value.Get<FVector2D>();
+    // 2026-10-13 위 2d 이동 주석 처리 후 행성 중심 움직임을 나중에 서버 권위적으로 수정 해야함
+    if (!Controller || !IsLocallyControlled())
+    {
+        return;
+    }
 
-    if (!Controller) return;
+    // 입력을 처리하기 전에 현재 표면 방향을 맞추기
+    UpdatePlanetOrientation();
 
-    FRotator ControlRotation = Controller->GetControlRotation();
-    FRotator YawRotation(0.f, ControlRotation.Yaw, 0.f);
+    const FVector2D MoveValue = Value.Get<FVector2D>();
 
-    FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
-    FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+    const FVector ForwardDirection = PlanetViewForward;
+
+    const FVector RightDirection = FVector::CrossProduct(PlanetUp,ForwardDirection).GetSafeNormal();
 
     AddMovementInput(ForwardDirection, MoveValue.X);
     AddMovementInput(RightDirection, MoveValue.Y);
 }
 
+// 2026-10-13 2d 회전에서 행성 중심 회전으로 수정
 void AMyCharacter::Look(const FInputActionValue& Value)
 {
-    FVector2D LookValue = Value.Get<FVector2D>();
+	// 2d 회전 주석 처리 후 행성 중심 회전으로 수정
+    if (!Controller || !IsLocallyControlled())
+    {
+        return;
+    }
 
-    AddControllerYawInput(LookValue.X);
-    AddControllerPitchInput(-LookValue.Y);
+    UpdatePlanetOrientation();
+
+    const FVector2D LookValue = Value.Get<FVector2D>();
+
+    PlanetViewForward = PlanetViewForward.RotateAngleAxis( LookValue.X * PlanetLookSensitivity,PlanetUp).GetSafeNormal();
+
+    const float PitchSign = bInvertPlanetLookY ? -1.f : 1.f;
+
+    PlanetCameraPitch = FMath::Clamp(PlanetCameraPitch - LookValue.Y * PlanetLookSensitivity * PitchSign, -80.f,80.f);
+
+    UpdatePlanetCamera();
 }
 
 void AMyCharacter::UpdateCrosshair()
@@ -250,7 +438,8 @@ void AMyCharacter::StartAim()
 
 	GetCharacterMovement()->MaxWalkSpeed = 250.f;   // 이동 속도 절반으로
 
-    bUseControllerRotationYaw = true;                            // 카메라 도는 대로 몸 회전
+    // 2026-10-13 bUseControllerRotationYaw true -> false 로 변경 
+    bUseControllerRotationYaw = false;                            // 카메라 도는 대로 몸 회전
     GetCharacterMovement()->bOrientRotationToMovement = false;
 
     if (USpringArmComponent* Arm = FindComponentByClass<USpringArmComponent>())
@@ -270,9 +459,11 @@ void AMyCharacter::StopAim()
     bIsAiming = false;
 
     GetCharacterMovement()->MaxWalkSpeed = 500.f;   // 이동 속도 절반으로
-
+    
     bUseControllerRotationYaw = false;
+	// 2026-10-13 GetCharacterMovement()->bOrientRotationToMovement false -> true 로 변경
     GetCharacterMovement()->bOrientRotationToMovement = true;
+    GetCharacterMovement()->bUseControllerDesiredRotation = false;
 
     if (USpringArmComponent* Arm = FindComponentByClass<USpringArmComponent>())
     {

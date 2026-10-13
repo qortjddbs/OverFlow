@@ -12,6 +12,9 @@ class UInputAction;
 class UNetSyncComponent;        // 추가
 class AWeaponBase;
 
+// 2026-10-13 추가
+class USpringArmComponent;
+
 UCLASS()
 class OVERFLOWJOLJAK_API AMyCharacter : public ACharacter
 {
@@ -19,6 +22,9 @@ class OVERFLOWJOLJAK_API AMyCharacter : public ACharacter
 
 public:
     AMyCharacter();
+
+    // 2026-10-13 추가
+    virtual void Tick(float DeltaSeconds) override;
 
 protected:
     virtual void BeginPlay() override;
@@ -116,6 +122,41 @@ public:
 
     void UpdateCrosshair();
 
+
+    // 2026-10-13 행성 중심 기반 움직임
+    // 
+    // 행성 중심의 월드 좌표입니다.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Planet Movement")
+    FVector PlanetCenter = FVector::ZeroVector;
+
+    // 현재 위치에서 행성 바깥을 향하는 방향입니다.
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Planet Movement")
+    FVector PlanetUp = FVector::UpVector;
+
+    // 마우스 입력에 곱할 감도입니다.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Planet Movement")
+    float PlanetLookSensitivity = 1.f;
+
+    // 카메라의 위아래 각도입니다.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Planet Movement")
+    float PlanetCameraPitch = -15.f;
+
+    // BP_Astronaut에 이미 있는 SpringArm을 저장합니다.
+    UPROPERTY(Transient)
+    USpringArmComponent* PlanetCameraArm = nullptr;
+
+    FVector PlanetViewForward = FVector::ForwardVector;
+    bool bPlanetViewInitialized = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Planet Movement")
+    bool bInvertPlanetLookY = true;
+
+    // 중력 방향과 캐릭터 자세를 갱신합니다.
+    void UpdatePlanetOrientation();
+    
+    void UpdatePlanetCamera();
+    // ============================================= 여기까지 추가
+
 public:
     UFUNCTION(BlueprintCallable, Category = "Weapon")
     void EquipWeapon(AActor* WeaponToEquip);
@@ -141,4 +182,7 @@ protected:
     void NextMode();
 
     void OnWheel(const FInputActionValue& V);
+
+   
+        
 };
