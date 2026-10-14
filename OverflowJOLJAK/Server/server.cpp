@@ -37,15 +37,15 @@ constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 constexpr float PLAYER_ATTACK_DAMAGE = 40.f;
 constexpr float PLAYER_MAX_HP = 100.f;
 constexpr float PLAYER_RESPAWN_TIME = 3.f;
-constexpr float PLAYER_SPAWN_X = 0.f;
-constexpr float PLAYER_SPAWN_Y = 0.f;
-constexpr float PLAYER_SPAWN_Z = 200.f;
+constexpr float PLAYER_SPAWN_X = 566.030103f;
+constexpr float PLAYER_SPAWN_Y = 480.403703f;
+constexpr float PLAYER_SPAWN_Z = 50674.035581f;
 constexpr float PLAYER_INVULN_TIME = 1.f;
 
 // 몬스터 관련 상수들
-constexpr float MONSTER_SPAWN_POSITION_X = -566.030103f;
-constexpr float MONSTER_SPAWN_POSITION_Y = 480.403703f;
-constexpr float MONSTER_SPAWN_POSITION_Z = 50674.035581f;
+constexpr float MONSTER_SPAWN_POSITION_X = -476.030103f;
+constexpr float MONSTER_SPAWN_POSITION_Y = 900.403703f;
+constexpr float MONSTER_SPAWN_POSITION_Z = 50614.03558f;
 constexpr float MONSTER_SPAWN_MIN_RADIUS = 300.f;
 constexpr float MONSTER_SPAWN_MAX_RADIUS = 1500.f;
 constexpr float MONSTER_CHASE_RANGE = 1000.f;
