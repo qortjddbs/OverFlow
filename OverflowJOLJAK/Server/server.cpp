@@ -43,9 +43,9 @@ constexpr float PLAYER_SPAWN_Z = 200.f;
 constexpr float PLAYER_INVULN_TIME = 1.f;
 
 // 몬스터 관련 상수들
-constexpr float MONSTER_SPAWN_POSITION_X = -476.030103f;
-constexpr float MONSTER_SPAWN_POSITION_Y = 900.403703f;
-constexpr float MONSTER_SPAWN_POSITION_Z = 50614.03558f;
+constexpr float MONSTER_SPAWN_POSITION_X = -566.030103f;
+constexpr float MONSTER_SPAWN_POSITION_Y = 480.403703f;
+constexpr float MONSTER_SPAWN_POSITION_Z = 50674.035581f;
 constexpr float MONSTER_SPAWN_MIN_RADIUS = 300.f;
 constexpr float MONSTER_SPAWN_MAX_RADIUS = 1500.f;
 constexpr float MONSTER_CHASE_RANGE = 1000.f;
@@ -57,10 +57,13 @@ constexpr float MONSTER_MOVE_SPEED = 20.f;
 constexpr float MONSTER_HIT_RADIUS = 60.f;   // 몸통 반지름 (X,Y 조준 허용 오차). 슬라임 크기에 맞게.
 constexpr float MONSTER_HIT_HEIGHT = 2000.f;  // 판정 기둥 높이. 서버-클라 Z 오차 흡수용으로 넉넉히.
 constexpr float MONSTER_HIT_Z_MARGIN = 1000.f;  // 기둥을 몬스터 z에서 아래로 얼마나 더 내릴지 (여유).
+constexpr float MONSTER_GRAVITY = 980.f;  // 중력 가속도 (cm/s^2)
+constexpr float MONSTER_STEP_CM = 100.f;    // 걸을 때 이 높이까지의 오르막/내리막은 땅에 붙어서 이동. 이보다 높은 벽은 못 오름
+constexpr float GROUND_PROBE_STEP_CM = 100.f;   // 땅을 찾을 때 한 번에 확인하는 간격 (= 복셀 1칸). 더 키우면 얇은 땅을 뚫고 지나갈 수 있음
 
 //----------------------------------------------------------------
-FPlanetGen  g_planet("../Config/Planet.cfg");
-FVoxelField g_field(g_planet);        // 반드시 g_planet 아래에
+FPlanetGen  g_planet("../Config/Planet.cfg");       // 서버가 켜질 때 딱 한 번 만들어짐. Planet.cfg를 읽고 노이즈 계산기 준비. 이후로는 좌표 값 알려주는 역할만
+FVoxelField g_field(g_planet);        // 편집된 상자들을 보관하는 곳. 아무도 안 건드린 칸의 값이 필요하면 g_planet에게 물어봄. 그래서 반드시 g_planet 아래에
 std::mutex  g_edit_order_lock;        // 편집 적용 + 방송 순서를 하나로 묶음
 
 // 클라가 RemoveSphere/AddSphere 에 쓰는 반경(cm)과 같게 맞출 것
@@ -170,6 +173,9 @@ struct MONSTER
     MonsterState m_state = IDLE;
     int m_target_id = 0;
     std::chrono::steady_clock::time_point m_last_attack;        // 항상 앞으로만 흐르는 시계(steady_clock)로 잰, 특정 시각 하나(time_point)
+
+    float m_fall_speed = 0.f;   // 지금 떨어지는 속도 (cm/s). 행성 중심 쪽이 +
+    bool m_on_ground = false;   // 땅에 서 있는지
 };
 
 HANDLE g_h_iocp = nullptr;
@@ -921,6 +927,147 @@ void accept_loop()
     }
 }
 
+// ===================== 몬스터 중력 =====================
+
+// 그 위치의 지형 값. 음수 = 땅속, 양수 = 공중, 0 = 딱 땅 표면.
+// 서버 지형은 1m 칸마다 값이 하나씩 있어서, 칸 사이에 있는 위치는
+// 둘러싼 8칸의 값을 거리에 따라 섞어서 구한다. (클라가 땅을 매끈하게 그리는 것과 같은 원리)
+static float ground_value(float x, float y, float z)
+// 어떤 위치가 땅속인지 공중인지 알려줘요. 지형 정보는 1m 칸마다 하나씩 있어요. 
+// 그래서 칸 사이 위치는 둘러싼 8칸 값을 거리에 따라 섞어서 구해요. 이렇게 해야 몬스터가 1m 계단처럼 툭툭 움직이지 않아요.
+{
+    // cm -> 칸
+    const double fx = x / VoxelEdit::VOXEL_SIZE;
+    const double fy = y / VoxelEdit::VOXEL_SIZE;
+    const double fz = z / VoxelEdit::VOXEL_SIZE;
+    const int ix = static_cast<int>(std::floor(fx));
+    const int iy = static_cast<int>(std::floor(fy));
+    const int iz = static_cast<int>(std::floor(fz));
+    const float tx = static_cast<float>(fx - ix);
+    const float ty = static_cast<float>(fy - iy);
+    const float tz = static_cast<float>(fz - iz);
+
+    auto mix = [](float a, float b, float t) { return a + (b - a) * t; };
+
+    const float lower = mix(mix(g_field.Value(ix, iy, iz), g_field.Value(ix + 1, iy, iz), tx),
+        mix(g_field.Value(ix, iy + 1, iz), g_field.Value(ix + 1, iy + 1, iz), tx), ty);
+    const float upper = mix(mix(g_field.Value(ix, iy, iz + 1), g_field.Value(ix + 1, iy, iz + 1), tx),
+        mix(g_field.Value(ix, iy + 1, iz + 1), g_field.Value(ix + 1, iy + 1, iz + 1), tx), ty);
+    return mix(lower, upper, tz);
+}
+
+// (x,y,z)에서 (dx,dy,dz) 방향으로 최대 max_dist(cm)까지 가면서 땅 표면을 찾는다.
+// 시작점이 공중이면 "땅이 시작되는 곳", 땅속이면 "공중이 시작되는 곳"을 찾는다.
+// 찾으면 true를 돌려주고 표면 위치를 out_x/y/z에 넣는다.
+static bool find_surface(float x, float y, float z, float dx, float dy, float dz, float max_dist,
+    float& out_x, float& out_y, float& out_z)
+// 한 방향으로 1m씩 가보면서 땅 표면을 찾아요.
+{
+    float prev_v = ground_value(x, y, z);
+    const bool start_in_ground = prev_v < 0.f;
+    float prev_d = 0.f;
+
+    while (prev_d < max_dist)
+    {
+        const float d = (std::min)(prev_d + GROUND_PROBE_STEP_CM, max_dist);
+        const float v = ground_value(x + dx * d, y + dy * d, z + dz * d);
+
+        if ((v < 0.f) != start_in_ground)
+        {
+            // 두 점 사이에서 값이 0이 되는 지점 = 땅 표면
+            const float s = prev_d + (d - prev_d) * (prev_v / (prev_v - v));
+            out_x = x + dx * s;
+            out_y = y + dy * s;
+            out_z = z + dz * s;
+            return true;
+        }
+        prev_d = d;
+        prev_v = v;
+    }
+    return false;
+}
+
+// 몬스터를 땅 위에 올려놓는다 (생성할 때 사용).
+// 가장 높은 산보다 높은 곳에서 출발해 행성 중심 쪽으로 내려오다 처음 만나는 땅에 놓는다.
+static void place_monster_on_ground(MONSTER& m)
+// 생성할 때 몬스터를 땅 위에 올려놔요.
+{
+    const float len = std::sqrt(m.m_x * m.m_x + m.m_y * m.m_y + m.m_z * m.m_z);
+    if (len < 1.f) return;
+    const float ux = m.m_x / len, uy = m.m_y / len, uz = m.m_z / len;
+
+    const float planet_r = static_cast<float>(g_planet.Radius() * VoxelEdit::VOXEL_SIZE);   // 행성 반지름 (cm)
+    const float top = planet_r * 1.2f;
+
+    float sx, sy, sz;
+    if (find_surface(ux * top, uy * top, uz * top, -ux, -uy, -uz, planet_r * 0.4f, sx, sy, sz))
+    {
+        m.m_x = sx; m.m_y = sy; m.m_z = sz;
+        m.m_on_ground = true;
+        m.m_fall_speed = 0.f;
+    }
+}
+
+// 몬스터 한 마리에 한 턴만큼 중력을 적용한다.
+// dt: 지난 턴부터 흐른 시간(초),  prev_x/y/z: 이번 턴에 쫓아가기로 움직이기 전 위치
+static void apply_monster_gravity(MONSTER& mon, float dt, float prev_x, float prev_y, float prev_z)
+// 매 턴 중력을 적용해요.
+{
+    // 위쪽 방향 = 행성 중심(0,0,0)에서 몬스터 쪽. 아래쪽은 그 반대
+    const float len = std::sqrt(mon.m_x * mon.m_x + mon.m_y * mon.m_y + mon.m_z * mon.m_z);
+    if (len < 1.f) return;
+    const float ux = mon.m_x / len, uy = mon.m_y / len, uz = mon.m_z / len;
+
+    float sx, sy, sz;   // 찾은 땅 표면 위치
+
+    // ① 땅속에 들어가 있으면 (오르막을 걸었거나, 누가 위에 땅을 쌓았을 때) 위로 올린다
+    if (ground_value(mon.m_x, mon.m_y, mon.m_z) < 0.f)
+    {
+        if (find_surface(mon.m_x, mon.m_y, mon.m_z, ux, uy, uz, MONSTER_STEP_CM, sx, sy, sz))
+        {
+            mon.m_x = sx; mon.m_y = sy; mon.m_z = sz;
+            mon.m_on_ground = true;
+            mon.m_fall_speed = 0.f;
+        }
+        else
+        {
+            // 너무 높은 벽에 부딪힘 -> 이번 턴 이동 취소
+            mon.m_x = prev_x; mon.m_y = prev_y; mon.m_z = prev_z;
+        }
+        return;
+    }
+
+    // ② 땅 위를 걷는 중이면, 발밑 가까이에 땅이 있는 동안은 표면에 붙인다 (내리막 따라가기)
+    if (mon.m_on_ground)
+    {
+        if (find_surface(mon.m_x, mon.m_y, mon.m_z, -ux, -uy, -uz, MONSTER_STEP_CM, sx, sy, sz))
+        {
+            mon.m_x = sx; mon.m_y = sy; mon.m_z = sz;
+            return;
+        }
+        // 발밑이 비었다 (절벽, 누가 판 구멍) -> 떨어지기 시작
+        mon.m_on_ground = false;
+        mon.m_fall_speed = 0.f;
+    }
+
+    // ③ 떨어지는 중: 속도를 키우고 그만큼 내려간다. 가는 길에 땅이 있으면 착지
+    mon.m_fall_speed += MONSTER_GRAVITY * dt;
+    const float drop = mon.m_fall_speed * dt;
+
+    if (find_surface(mon.m_x, mon.m_y, mon.m_z, -ux, -uy, -uz, drop, sx, sy, sz))
+    {
+        mon.m_x = sx; mon.m_y = sy; mon.m_z = sz;
+        mon.m_on_ground = true;
+        mon.m_fall_speed = 0.f;
+    }
+    else
+    {
+        mon.m_x -= ux * drop;
+        mon.m_y -= uy * drop;
+        mon.m_z -= uz * drop;
+    }
+}
+
 void spawn_initial_monsters()
 {
     for (int i = 0; i < 10; ++i)
@@ -931,10 +1078,11 @@ void spawn_initial_monsters()
         MONSTER m;
         m.m_id = i + 1;
         m.m_x = MONSTER_SPAWN_POSITION_X + radius * cosf(angle);
-        m.m_y = MONSTER_SPAWN_POSITION_Y + radius + sinf(angle);
+        m.m_y = MONSTER_SPAWN_POSITION_Y + radius * sinf(angle);
         m.m_z = MONSTER_SPAWN_POSITION_Z;
         m.m_monster_type = 0;
         m.m_hp = 100;
+        place_monster_on_ground(m);
 
         g_monsters.push_back(m);
     }
@@ -942,9 +1090,17 @@ void spawn_initial_monsters()
 
 void monster_ai_tick()      // 별도 쓰레드가 실행
 {
+    auto last_tick = std::chrono::steady_clock::now();   // ▼ 추가: 지난 턴 시각
+
     while (true) 
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(MONSTER_HEARTBEAT));
+
+        // ▼ 추가: 지난 턴부터 실제로 흐른 시간(초)
+        const auto tick_now = std::chrono::steady_clock::now();
+        float dt = std::chrono::duration<float>(tick_now - last_tick).count();
+        last_tick = tick_now;
+        if (dt > 0.5f) dt = 0.5f;   // 디버거로 멈췄다 풀었을 때 한 번에 너무 멀리 떨어지는 것 방지
         {
             std::lock_guard<std::mutex> player_lock(g_player_lock);        // 항상 플레이어 락 먼저
             std::lock_guard<std::mutex> monster_lock(g_monster_lock);       // 그 다음 몬스터 락 (데드락 방지)
@@ -964,6 +1120,7 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                     m.m_y = MONSTER_SPAWN_POSITION_Y + radius * sinf(angle);
                     m.m_z = MONSTER_SPAWN_POSITION_Z;
                     m.m_hp = 100;
+                    place_monster_on_ground(m);
                     g_monsters.push_back(m);
 
                     sc_packet_monster_spawn sp{};
@@ -1008,6 +1165,8 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
             // 플레이어 <-> 몬스터 거리 계산 로직 (가장 가까운 플레이어 찾기)
             for (auto& mon : g_monsters) 
             {
+                const float prev_x = mon.m_x, prev_y = mon.m_y, prev_z = mon.m_z;   // 이번 턴에 움직이기 전 위치
+
                 float min_distance = MONSTER_CHASE_RANGE;
                 int player_id = 0;
 
@@ -1050,18 +1209,18 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                     mon.m_x += nx * MONSTER_MOVE_SPEED;
                     mon.m_y += ny * MONSTER_MOVE_SPEED;
 
-                    sc_packet_monster_position mp;
-                    mp.m_size = sizeof(mp);
-                    mp.m_type = PKT_S2C_MONSTER_POSITION;
-                    mp.m_id = mon.m_id;
-                    mp.m_x = mon.m_x;
-                    mp.m_y = mon.m_y;
-                    mp.m_z = mon.m_z;
+                    //sc_packet_monster_position mp;
+                    //mp.m_size = sizeof(mp);
+                    //mp.m_type = PKT_S2C_MONSTER_POSITION;
+                    //mp.m_id = mon.m_id;
+                    //mp.m_x = mon.m_x;
+                    //mp.m_y = mon.m_y;
+                    //mp.m_z = mon.m_z;
 
-                    for (auto& [id, session] : g_players)
-                    {
-                        send_packet(&session, &mp, sizeof(mp));
-                    }
+                    //for (auto& [id, session] : g_players)
+                    //{
+                    //    send_packet(&session, &mp, sizeof(mp));
+                    //}
                 }
                 // 공격 상태 (공격 사거리 진입)
                 else if (min_distance <= MONSTER_ATTACK_RANGE)
@@ -1114,6 +1273,27 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
                         }
 
                         mon.m_last_attack = now;
+                    }
+                }
+
+                // 중력 적용 (쫓아가는 중이든 서 있든 공격 중이든 항상)
+                apply_monster_gravity(mon, dt, prev_x, prev_y, prev_z);
+
+                // 위치가 바뀌었으면 모두에게 알린다 (쫓아가서든 떨어져서든)
+                const float mdx = mon.m_x - prev_x, mdy = mon.m_y - prev_y, mdz = mon.m_z - prev_z;
+                if (mdx * mdx + mdy * mdy + mdz * mdz > 0.01f)     // 0.1cm 넘게 움직였을 때만
+                {
+                    sc_packet_monster_position mp;
+                    mp.m_size = sizeof(mp);
+                    mp.m_type = PKT_S2C_MONSTER_POSITION;
+                    mp.m_id = mon.m_id;
+                    mp.m_x = mon.m_x;
+                    mp.m_y = mon.m_y;
+                    mp.m_z = mon.m_z;
+
+                    for (auto& [id, session] : g_players)
+                    {
+                        send_packet(&session, &mp, sizeof(mp));
                     }
                 }
             }

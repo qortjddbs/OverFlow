@@ -36,6 +36,66 @@
 			"Type": "RequiredResource"
 		},
 		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-Voxel.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-Voxel.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelEditor.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelEditor.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelEditorDefault.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelEditorDefault.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelExamples.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelExamples.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelGraph.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelGraph.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelGraphEditor.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelGraphEditor.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelHelpers.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor-VoxelHelpers.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/Binaries/Win64/UnrealEditor.modules",
+			"Type": "RequiredResource"
+		},
+		{
 			"Path": "$(EngineDir)/Binaries/Win64/AgentInterface.dll",
 			"Type": "DynamicLibrary"
 		},
@@ -4875,6 +4935,10 @@
 	"RuntimeDependencies": [
 		{
 			"Path": "$(ProjectDir)/OverflowJOLJAK.uproject",
+			"Type": "UFS"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/VoxelFree-434-159fd19a0-5.8-Binaries/VoxelFree.uplugin",
 			"Type": "UFS"
 		},
 		{
@@ -29982,6 +30046,7 @@
 		"VariantManagerContent",
 		"VisualStudioCodeSourceCodeAccess",
 		"VisualStudioSourceCodeAccess",
+		"VoxelFree",
 		"Water",
 		"WaveTable",
 		"WebMMedia",
