@@ -60,6 +60,9 @@ public:
     TSubclassOf<AProjectile> RemoteFireProjectileClass;
 
 
+    UPROPERTY(EditAnywhere, Category = "Monster")
+    bool bMonsterPosIsFeet = true;   // 서버가 발바닥 위치를 보내면 true
+
 public:
     // Op: 0 = 파기, 1 = 쌓기
     // 로컬로 파지 않고 서버에 요청만 보낸다

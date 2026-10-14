@@ -23,6 +23,8 @@
 #include "VoxelData/VoxelDataImpl.inl"
 #include "VoxelTools/VoxelToolHelpers.h"
 
+#include "Components/CapsuleComponent.h"
+
 UNetSyncComponent::UNetSyncComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
@@ -753,10 +755,9 @@ void UNetSyncComponent::InterpolateRemotePlayers(float DeltaTime)
         }
     }
 }
+
 void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
 {
-    const float SyncInterval = 1.0f / 30.0f;   // 서버 동기화 간격
-
     for (const TPair<int32, FVector>& Pair : MonsterTargetLocations)
     {
         AActor** Found = Monsters.Find(Pair.Key);
@@ -765,28 +766,32 @@ void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
         AActor* MonsterChar = *Found;
         const FVector Current = MonsterChar->GetActorLocation();
 
-        FVector Target = Pair.Value;
-        Target.Z = Current.Z;   // Z는 서버 값 무시 (중력/고정)
+        // 서버 위치 → 위쪽 방향 (행성 중심 = 원점)
+        const FVector Up = Pair.Value.GetSafeNormal();
+
+        // 서버가 발바닥 위치를 보내면 반높이만큼 올린다. 몸 중심을 보내면 0.
+        float FeetOffset = 0.f;
+        if (bMonsterPosIsFeet)
+            if (ACharacter* C = Cast<ACharacter>(MonsterChar))
+                FeetOffset = C->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+
+        const FVector Target = Pair.Value + Up * FeetOffset;
 
         const FVector NewLoc = FMath::VInterpTo(Current, Target, DeltaTime, MonsterInterpSpeed);
-        MonsterChar->SetActorLocation(NewLoc, false);
 
-        // 이동 방향으로 회전
-        FVector Dir = Target - Current;
-        Dir.Z = 0.f;
-        if (!Dir.IsNearlyZero(1.0f))
-        {
-            FRotator R = Dir.Rotation();
-            R.Pitch = 0.f; R.Roll = 0.f;
-            FRotator Smooth = FMath::RInterpTo(MonsterChar->GetActorRotation(), R, DeltaTime, 8.f);
-            MonsterChar->SetActorRotation(Smooth);
-        }
+        // 회전: 위쪽은 행성 바깥, 앞쪽은 이동 방향(표면에 투영)
+        FVector Fwd = FVector::VectorPlaneProject(Target - Current, Up);
+        if (Fwd.IsNearlyZero(1.0f))
+            Fwd = FVector::VectorPlaneProject(MonsterChar->GetActorForwardVector(), Up);
 
+        const FQuat Goal = FRotationMatrix::MakeFromZX(Up, Fwd).ToQuat();
+        const FQuat Smooth = FQuat::Slerp(MonsterChar->GetActorQuat(), Goal,
+            FMath::Clamp(DeltaTime * 8.f, 0.f, 1.f));
+
+        MonsterChar->SetActorLocationAndRotation(NewLoc, Smooth, false);
+
+        // 애니메이션용 속도
         if (ACharacter* Ch = Cast<ACharacter>(MonsterChar))
-        {
-            FVector Vel = (NewLoc - Current) / DeltaTime;
-            Ch->GetCharacterMovement()->Velocity = Vel;
-        }
+            Ch->GetCharacterMovement()->Velocity = (NewLoc - Current) / DeltaTime;
     }
 }
-
