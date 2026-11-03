@@ -116,7 +116,7 @@ bool FVoxelField::ApplyEdit(uint8_t Op, float Cx, float Cy, float Cz, float Radi
             int16_t& v = C.V[LocalIndex(x - bx, y - by, z - bz)];
             if (v == UNSET) v = GenBox[BoxIndex(x, y, z)];   // 계산한 생성기 값을 저장해 두고 다음에 재사용
             const int16_t n = ApplySphere(v, x, y, z, cx, cy, cz, r, static_cast<EOp>(Op));
-            if (n != v) { v = n; bChanged = true; }
+            if (n != v) { R.ChangedSum += std::abs(int(n) - int(v)); v = n; bChanged = true; }
         }
 
         if (bChanged)

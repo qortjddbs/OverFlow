@@ -15,6 +15,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
+#include <array>
 
 #include "..\Shared\Protocol.h"
 
@@ -41,6 +42,12 @@ constexpr float PLAYER_SPAWN_X = 566.030103f;
 constexpr float PLAYER_SPAWN_Y = 480.403703f;
 constexpr float PLAYER_SPAWN_Z = 50674.035581f;
 constexpr float PLAYER_INVULN_TIME = 1.f;
+
+// 아이템(채집) 관련 상수들
+constexpr int DIG_MIN_INTERVAL_MS = 90;         // 서버가 받아주는 파기/쌓기 최소 간격 (클라 VoxelCooldown 0.1초보다 살짝 여유)
+constexpr double SOIL_UNITS_PER_M3 = 100.0;     // 1m^3 = 흙 100 (= 0.01m^3 단위)
+
+static_assert(sizeof(sc_packet_item_change) == 3 + 9, "아이템 패킷 크키가 클라와 다르면 안 됨");
 
 // 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = -476.030103f;
@@ -148,6 +155,10 @@ struct SESSION
     int m_visual = 0;       // 일단 임시로 생성. 나중가면 enum으로 따로 만들어야될듯. (디폴트 0 -> 기본 캐릭터)
 
     std::chrono::steady_clock::time_point m_last_hit_time{};
+
+    std::array<int, ITEM_COUNT> m_inventory{};                      // [아이템 번호] = 개수. 흙은 0.01 m^3 단위
+    std::chrono::steady_clock::time_point m_last_dig_time{};        // 마지막으로 받아준 파기/쌓기 시각
+    double m_soil_frac = 0.0;                                       // 1 단위가 안 돼서 남은 흙 (다음 파기에 이어서 쌓임)
 
 	// ==============================================================
     FClientTerrainState m_terrain;   // 이 클라가 가진 청크 버전
@@ -376,8 +387,32 @@ static bool is_build_blocked(float cx, float cy, float cz, float radius)
     return false;
 }
 
+// 인벤토리를 바꾸고 본인에게 알린다. 반드시 g_player_lock을 잡은 상태에서 부를 것
+static void change_item(SESSION* s, unsigned char item, int delta)
+{
+    s->m_inventory[item] += delta;
+
+    sc_packet_item_change ic{};
+    ic.m_size = sizeof(ic);
+    ic.m_type = PKT_S2C_ITEM_CHANGE;
+    ic.m_item = item;
+    ic.m_total = s->m_inventory[item];
+    send_packet(s, &ic, sizeof(ic));
+
+    printf("[item] client %d item=%d %+d (총 %d)\n", s->m_id, item, delta, ic.m_total);
+    fflush(stdout);
+}
+
 void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
 {
+    // 파기/쌓기 속도 제한: 클라를 고쳐서 초당 수십 번 보내도 흙을 더 못 가져가게
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - editor->m_last_dig_time < std::chrono::milliseconds(DIG_MIN_INTERVAL_MS))
+            return;
+        editor->m_last_dig_time = now;
+    }
+
     // ① 검증: 너무 먼 곳을 파려고 하면 거부 (치팅 방지)
     const float dx = pkt->m_x - editor->m_x;
     const float dy = pkt->m_y - editor->m_y;
@@ -394,6 +429,15 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
         printf("[terrain] 거부: 캐릭터와 겹침\n"); fflush(stdout);
         return;
     }
+    if (pkt->m_op == 1)
+    {
+        std::lock_guard<std::mutex> lock(g_player_lock);
+        if (editor->m_inventory[ITEM_SOIL] <= 0)
+        {
+            printf("[terrain] 거부: 흙 부족 (client %d)\n", editor->m_id); fflush(stdout);
+            return;
+        }
+    }
 
     // ② 이 락이 "편집 순서 = 방송 순서"를 보장한다
     //    두 사람이 동시에 파도 모든 클라가 같은 순서로 받는다
@@ -404,8 +448,8 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
     const bool bChanged = g_field.ApplyEdit(pkt->m_op, pkt->m_x, pkt->m_y, pkt->m_z, pkt->m_radius,
         [&](const FEditResult& In) { R = In; });
 
-    printf("[terrain] %s changed=%d seq=%u touched=%d\n",
-        pkt->m_op == 0 ? "DIG" : "BUILD", bChanged, R.Seq, R.NumTouched);
+    printf("[terrain] %s changed=%d seq=%u touched=%d m3=%.3f\n",
+        pkt->m_op == 0 ? "DIG" : "BUILD", bChanged, R.Seq, R.NumTouched, R.ChangedSum / (2.0 * VoxelEdit::QMAX));
     fflush(stdout);
 
     if (!bChanged) return;   // 허공을 팠다든지 해서 바뀐 게 없으면 보낼 것도 없음
@@ -435,6 +479,25 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
     {
         send_packet(&session, &out, sizeof(out));
         FVoxelField::TrackEditSent(R, session.m_terrain);   // 이 클라가 받은 버전 기록
+    }
+
+    // 흙 게이지: 파면 깎인 양만큼 채우고, 쌓으면 쌓은 양만큼 뺀다
+    const double units = R.ChangedSum / (2.0 * VoxelEdit::QMAX) * SOIL_UNITS_PER_M3;
+    int& soil = editor->m_inventory[ITEM_SOIL];
+
+    if (pkt->m_op == 0)
+    {
+        editor->m_soil_frac += units;
+        const int whole = static_cast<int>(editor->m_soil_frac);        // 정수 부분만 지급
+        editor->m_soil_frac -= whole;                                   // 남은 소수는 통에 남김
+
+        const int give = (std::min)(whole, SOIL_CAPACITY - soil);       // 통이 차면 넘친 흙은 버림
+        if (give > 0) change_item(editor, ITEM_SOIL, +give);
+    }
+    else
+    {
+        const int cost = (std::min)(static_cast<int>(std::ceil(units)), soil);       // 올림, 가진 것 이상은 못 뺌
+        if (cost > 0) change_item(editor, ITEM_SOIL, -cost);
     }
 }
 //=============================================================
@@ -639,6 +702,7 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
         {
             send_packet(&session, &remove_pkt, sizeof(remove_pkt));
         }
+        change_item(attacker, ITEM_SLIME_GEL, +1);          // 죽인 사람에게 젤 1개
     }
 }
 

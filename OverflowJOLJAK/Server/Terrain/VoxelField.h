@@ -37,6 +37,7 @@ struct FEditResult
     int      NumTouched = 0;
     VoxelEdit::ChunkKey Keys[VoxelEdit::MAX_TOUCHED];
     uint32_t Versions[VoxelEdit::MAX_TOUCHED] = {};
+    double ChangedSum = 0;      // 이번 편집으로 바뀐 칸 값 변화량의 합 (양자화 단위). 흙 계산용
 };
 
 class FVoxelField

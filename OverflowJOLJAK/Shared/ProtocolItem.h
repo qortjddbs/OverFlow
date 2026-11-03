@@ -5,13 +5,14 @@
 // 새 아이템은 ITEM_COUNT 바로 위에 추가할 것 (중간에 끼우면 번호가 밀린다)
 enum ITEM_TYPE : unsigned char
 {
-    ITEM_IRON_ORE = 0,     // 철광석
-    ITEM_COPPER_ORE = 1,   // 구리광석
-    ITEM_GOLD_ORE = 2,     // 금광석
+    ITEM_SOIL = 0,          // 흙
+    ITEM_SLIME_GEL = 1,     // 슬라임 젤 (슬라임 처치 시)
 
     ITEM_COUNT             // 아이템 종류 수 (배열 크기, 범위 검사용). 실제 아이템 아님
 };
 
+// 흙 게이지: m_total이 "0.01 m^3 단위 정수". 클라는 m_total / SOIL_CAPACITY 로 게이지 비율을 그린다
+constexpr int SOIL_CAPACITY = 1000;     // 통 하나 = 10 m^3 (임시, 시연해 보고 조절)
 #pragma pack(push, 1)
 
 // 서버 -> 클라: 내 인벤토리의 아이템 하나가 바뀌었다.
