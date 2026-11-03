@@ -138,6 +138,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Shared\Protocol.h" />
+    <ClInclude Include="..\Shared\ProtocolItem.h" />
     <ClInclude Include="..\Shared\ProtocolTerrain.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
