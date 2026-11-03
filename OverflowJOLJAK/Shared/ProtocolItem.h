@@ -12,7 +12,7 @@ enum ITEM_TYPE : unsigned char
 };
 
 // 흙 게이지: m_total이 "0.01 m^3 단위 정수". 클라는 m_total / SOIL_CAPACITY 로 게이지 비율을 그린다
-constexpr int SOIL_CAPACITY = 1000;     // 통 하나 = 10 m^3 (임시, 시연해 보고 조절)
+constexpr int SOIL_CAPACITY = 1000;     // 통 하나 (꾹 누르고 약 1분)
 #pragma pack(push, 1)
 
 // 서버 -> 클라: 내 인벤토리의 아이템 하나가 바뀌었다.

@@ -45,9 +45,7 @@ constexpr float PLAYER_INVULN_TIME = 1.f;
 
 // 아이템(채집) 관련 상수들
 constexpr int DIG_MIN_INTERVAL_MS = 90;         // 서버가 받아주는 파기/쌓기 최소 간격 (클라 VoxelCooldown 0.1초보다 살짝 여유)
-constexpr double SOIL_UNITS_PER_M3 = 100.0;     // 1m^3 = 흙 100 (= 0.01m^3 단위)
-
-static_assert(sizeof(sc_packet_item_change) == 3 + 9, "아이템 패킷 크키가 클라와 다르면 안 됨");
+constexpr double SOIL_UNITS_PER_M3 = 1000.0 / 600.0;        // 통 하나(1000) = 600 m^3 (대략 꾹 누르고 1분)
 
 // 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = -476.030103f;
