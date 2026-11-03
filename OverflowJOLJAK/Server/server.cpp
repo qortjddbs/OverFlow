@@ -154,7 +154,7 @@ struct SESSION
 
     std::chrono::steady_clock::time_point m_last_hit_time{};
 
-    std::array<int, ITEM_COUNT> m_inventory{};                      // [아이템 번호] = 개수. 흙은 0.01 m^3 단위
+    std::array<int, ITEM_COUNT> m_inventory{};                      // [아이템 번호] = 개수
     std::chrono::steady_clock::time_point m_last_dig_time{};        // 마지막으로 받아준 파기/쌓기 시각
     double m_soil_frac = 0.0;                                       // 1 단위가 안 돼서 남은 흙 (다음 파기에 이어서 쌓임)
 
@@ -394,6 +394,7 @@ static void change_item(SESSION* s, unsigned char item, int delta)
     ic.m_size = sizeof(ic);
     ic.m_type = PKT_S2C_ITEM_CHANGE;
     ic.m_item = item;
+    ic.m_delta = delta;
     ic.m_total = s->m_inventory[item];
     send_packet(s, &ic, sizeof(ic));
 

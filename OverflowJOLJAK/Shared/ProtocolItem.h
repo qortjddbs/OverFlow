@@ -11,7 +11,7 @@ enum ITEM_TYPE : unsigned char
     ITEM_COUNT             // 아이템 종류 수 (배열 크기, 범위 검사용). 실제 아이템 아님
 };
 
-// 흙 게이지: m_total이 "0.01 m^3 단위 정수". 클라는 m_total / SOIL_CAPACITY 로 게이지 비율을 그린다
+// 흙 게이지: m_total이 "단위 정수". 클라는 m_total / SOIL_CAPACITY 로 게이지 비율을 그린다
 constexpr int SOIL_CAPACITY = 1000;     // 통 하나 (꾹 누르고 약 1분)
 #pragma pack(push, 1)
 
