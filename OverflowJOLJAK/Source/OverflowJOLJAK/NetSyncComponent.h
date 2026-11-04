@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Inventory/ItemTypes.h"
+
 #include "NetSyncComponent.generated.h"
 
 class FSocket;
@@ -11,6 +13,7 @@ class AProjectile;
 // 몬스터가 공격을 실행했을 때 브로드캐스트되는 델리게이트.
 // AEnemyCharacter나 플레이어 쪽에서 바인딩해서 공격 애니메이션/이펙트/피격 반응 등을 처리하면 된다.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMonsterAttack, int32, MonsterId, int32, TargetPlayerId);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnItemChanged, int32, ItemId, int32, Delta, int32, Total);
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OVERFLOWJOLJAK_API UNetSyncComponent : public UActorComponent
@@ -63,6 +66,30 @@ public:
     UPROPERTY(EditAnywhere, Category = "Monster")
     bool bMonsterPosIsFeet = true;   // 서버가 발바닥 위치를 보내면 true
 
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory")
+    TObjectPtr<UDataTable> ItemTable;            // 디테일 패널에서 DT_Items 지정
+
+    UPROPERTY(BlueprintAssignable, Category = "Inventory")
+    FOnItemChanged OnItemChanged;
+
+    UFUNCTION(BlueprintPure, Category = "Inventory")
+    int32 GetItemCount(int32 ItemId) const;
+
+    // 블루프린트에서 이름(드롭다운)으로 개수 조회
+    UFUNCTION(BlueprintPure, Category = "Inventory")
+    int32 GetItemCountByRow(const FDataTableRowHandle& Row) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Inventory")
+    bool FindItemRow(int32 ItemId, FItemRow& OutRow) const;
+
+    UFUNCTION(BlueprintPure, Category = "Inventory")
+    float GetSoilRatio() const;
+
+private:
+    TArray<int32> Inventory;
+    void HandleItemChange(const struct sc_packet_item_change& Pkt);
+    void ValidateItemTable() const;
+
 public:
     // Op: 0 = 파기, 1 = 쌓기
     // 로컬로 파지 않고 서버에 요청만 보낸다
@@ -82,7 +109,7 @@ private:
     double  LastEditSendTime = 0.0;
     FVector LastEditCenter = FVector(FLT_MAX);
     uint8   LastEditOp = 255;
-    static constexpr double EditInterval = 0.05;   // 초당 최대 10번
+    static constexpr double EditInterval = 0.1;   // 초당 최대 10번
 
 
 protected:

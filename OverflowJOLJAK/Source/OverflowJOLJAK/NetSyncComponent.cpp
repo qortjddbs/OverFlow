@@ -23,11 +23,14 @@
 #include "VoxelData/VoxelDataImpl.inl"
 #include "VoxelTools/VoxelToolHelpers.h"
 
+#include "Inventory/ItemTypes.h"
 #include "Components/CapsuleComponent.h"
+
 
 UNetSyncComponent::UNetSyncComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
+    Inventory.SetNumZeroed(ITEM_COUNT);
 }
 
 void UNetSyncComponent::BeginPlay()
@@ -48,6 +51,8 @@ void UNetSyncComponent::BeginPlay()
         Owner->GetWorldTimerManager().SetTimer(SendTimerHandle, this, &UNetSyncComponent::SendPositionTick, 1.0f / 30.0f, true);
         Owner->GetWorldTimerManager().SetTimer(RecvTimerHandle, this, &UNetSyncComponent::ReceiveFromServer, 0.03f, true);
     }
+
+    ValidateItemTable();
 }
 
 void UNetSyncComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -383,6 +388,13 @@ void UNetSyncComponent::ReceiveFromServer()
             UpdateMonsterPosition(Pkt->m_id, FVector(Pkt->m_x, Pkt->m_y, Pkt->m_z));
             break;
         }
+        case PKT_S2C_ITEM_CHANGE:
+        {
+            const sc_packet_item_change* Pkt =
+                reinterpret_cast<const sc_packet_item_change*>(RecvBuffer.GetData());
+            HandleItemChange(*Pkt);
+            break;
+        }
         case PKT_S2C_MONSTER_ATTACK:
         {
             const sc_packet_monster_attack* Pkt =
@@ -678,6 +690,53 @@ void UNetSyncComponent::UpdatePlayerHp(int32 Id, int32 NewHp, float Damage)
             Ch->PlayerHpChanged(NewHp, PreviousHp);
         }
     }
+}
+
+void UNetSyncComponent::HandleItemChange(const sc_packet_item_change& Pkt)
+{
+    if (Pkt.m_item >= ITEM_COUNT) return;
+    Inventory[Pkt.m_item] = Pkt.m_total;
+    OnItemChanged.Broadcast(Pkt.m_item, Pkt.m_delta, Pkt.m_total);
+}
+
+int32 UNetSyncComponent::GetItemCount(int32 ItemId) const
+{
+    return Inventory.IsValidIndex(ItemId) ? Inventory[ItemId] : 0;
+}
+
+int32 UNetSyncComponent::GetItemCountByRow(const FDataTableRowHandle& Row) const
+{
+    const FItemRow* R = Row.GetRow<FItemRow>(TEXT("GetItemCountByRow"));
+    return R ? GetItemCount(R->ItemId) : 0;
+}
+
+bool UNetSyncComponent::FindItemRow(int32 ItemId, FItemRow& OutRow) const
+{
+    if (!ItemTable) return false;
+    for (const auto& Pair : ItemTable->GetRowMap())
+    {
+        const FItemRow* R = reinterpret_cast<const FItemRow*>(Pair.Value);
+        if (R->ItemId == ItemId) { OutRow = *R; return true; }
+    }
+    return false;
+}
+
+float UNetSyncComponent::GetSoilRatio() const
+{
+    return (float)GetItemCount(ITEM_SOIL) / SOIL_CAPACITY;
+}
+
+void UNetSyncComponent::ValidateItemTable() const
+{
+    if (!ItemTable) { UE_LOG(LogTemp, Error, TEXT("[Item] ItemTable 미지정")); return; }
+
+    TSet<int32> Found;
+    for (const auto& Pair : ItemTable->GetRowMap())
+        Found.Add(reinterpret_cast<const FItemRow*>(Pair.Value)->ItemId);
+
+    for (int32 i = 0; i < ITEM_COUNT; ++i)
+        if (!Found.Contains(i))
+            UE_LOG(LogTemp, Error, TEXT("[Item] DT_Items에 ItemId %d 행이 없음"), i);
 }
 
 void UNetSyncComponent::HandlePlayerDeath(int32 Id)
