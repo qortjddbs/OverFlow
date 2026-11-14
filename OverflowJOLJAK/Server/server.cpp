@@ -71,9 +71,7 @@ constexpr float MONSTER_ATTACK_COOL = 1.f;
 constexpr float MONSTER_ATTACK_DAMAGE = 20.f;
 constexpr int MONSTER_HEARTBEAT = 100;
 constexpr float MONSTER_MOVE_SPEED = 20.f;
-constexpr float MONSTER_HIT_RADIUS = 60.f;   // 몸통 반지름 (X,Y 조준 허용 오차). 슬라임 크기에 맞게.
-constexpr float MONSTER_HIT_HEIGHT = 2000.f;  // 판정 기둥 높이. 서버-클라 Z 오차 흡수용으로 넉넉히.
-constexpr float MONSTER_HIT_Z_MARGIN = 1000.f;  // 기둥을 몬스터 z에서 아래로 얼마나 더 내릴지 (여유).
+constexpr float MONSTER_HIT_RADIUS = 60.f;   // 몸통 공 반지름(cm).클라 슬라임 크기에 맞출 것
 constexpr float MONSTER_GRAVITY = 980.f;  // 중력 가속도 (cm/s^2)
 constexpr float MONSTER_STEP_CM = 100.f;    // 걸을 때 이 높이까지의 오르막/내리막은 땅에 붙어서 이동. 이보다 높은 벽은 못 오름
 constexpr float GROUND_PROBE_STEP_CM = 100.f;   // 땅을 찾을 때 한 번에 확인하는 간격 (= 복셀 1칸). 더 키우면 얇은 땅을 뚫고 지나갈 수 있음
@@ -635,7 +633,8 @@ void update_position(SESSION* me)
     }
 }
 
-void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // 공격 판정
+// 공격 판정
+void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)
 {
 
     float dx = pkt->m_dir_x;
@@ -665,37 +664,38 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)  // �
 
         for (auto& mon : g_monsters)
         {
-            // 1. 발사 원점 -> 몬스터까지의 거리 (OM)
-            float omx = mon.m_x - pkt->m_origin_x;
-            float omy = mon.m_y - pkt->m_origin_y;
-            float omz = mon.m_z - pkt->m_origin_z;
+            // 몬스터 자리의 위쪽 방향 (행성 중심 -> 몬스터, 길이 1)
+            const float mlen = std::sqrt(mon.m_x * mon.m_x + mon.m_y * mon.m_y + mon.m_z * mon.m_z);
+            if (mlen < 1.f) continue;       // 행성 중심에 있는 이상한 경우는 스킵.
+            const float ux = mon.m_x / mlen;
+            const float uy = mon.m_y / mlen;
+            const float uz = mon.m_z / mlen;
 
-            // 2. 방향벡터에 투영 (내적, dot product)
-            float t = omx * nx + omy * ny + omz * nz;
-            if (t < 0.f)
-            {
-                continue;   // 발사자 뒤쪽 몬스터는 무시
-            }
+            // 몸통 공의 중심 = 발바닥 + 위 방향 x 반지름
+            const float cx = mon.m_x + ux * MONSTER_HIT_RADIUS;
+            const float cy = mon.m_y + uy * MONSTER_HIT_RADIUS;
+            const float cz = mon.m_z + uz * MONSTER_HIT_RADIUS;
 
-            // 3. 광선 위에서 몬스터에 제일 가까운 점 (P)
-            float px = pkt->m_origin_x + nx * t;
-            float py = pkt->m_origin_y + ny * t;
-            float pz = pkt->m_origin_z + nz * t;
+            // 발사 원점 -> 공 중심
+            const float ocx = cx - pkt->m_origin_x;
+            const float ocy = cy - pkt->m_origin_y;
+            const float ocz = cz - pkt->m_origin_z;
 
-            // 4. 그 점에서 몬스터 중심까지의 거리
-            float ddx = mon.m_x - px;
-            float ddy = mon.m_y - py;
-            float ddz = mon.m_z - pz;
-            //float dist = sqrtf(ddx * ddx + ddy * ddy + ddz * ddz);
-            //float dist = sqrtf((mon.m_x - pkt->m_origin_x) * (mon.m_x - pkt->m_origin_x) + (mon.m_y - pkt->m_origin_y) * (mon.m_y - pkt->m_origin_y));
-            float dist = fabsf((mon.m_y - pkt->m_origin_y) * nx - (mon.m_x - pkt->m_origin_x) * ny);
+            // 총알 직선 위에서 공 중심에 가장 가까운 지점까지의 거리 (내적)
+            const float t = ocx * nx + ocy * ny + ocz * nz;
+            if (t < 0.f) continue;   // 발사자 뒤쪽 몬스터는 무시
+            
+            // 그 가장 가까운 지점
+            const float px = pkt->m_origin_x + nx * t;
+            const float py = pkt->m_origin_y + ny * t;
+            const float pz = pkt->m_origin_z + nz * t;
 
-            // std::cout << "  monster " << mon.m_id << " dist=" << dist << " (radius=" << MONSTER_HIT_RADIUS << ")\n";   // 임시
-            // std::cout << "  monster " << mon.m_id << " pos=(" << mon.m_x << "," << mon.m_y << "," << mon.m_z << ") dist=" << dist << "\n";
-
-
-            // std::cout << "monster " << mon.m_id << " t=" << t << "\n";
-            if (dist <= MONSTER_HIT_RADIUS && t < closest_t)
+            // 가장 가까운 지점 -> 공 중심 (3D)
+            const float ddx = cx - px;
+            const float ddy = cy - py;
+            const float ddz = cz - pz;
+            const float dist_sq = ddx * ddx + ddy * ddy + ddz * ddz;
+            if (dist_sq <= MONSTER_HIT_RADIUS*MONSTER_HIT_RADIUS && t < closest_t)
             {
                 closest_t = t;
                 hit_mon = &mon;
