@@ -5,8 +5,11 @@
 // 새 아이템은 ITEM_COUNT 바로 위에 추가할 것 (중간에 끼우면 번호가 밀린다)
 enum ITEM_TYPE : unsigned char
 {
-    ITEM_SOIL = 0,          // 흙
+    ITEM_SOIL = 0,          // 흙 (초기상태)
     ITEM_SLIME_GEL = 1,     // 슬라임 젤 (슬라임 처치 시)
+    ITEM_RESIN = 2,         // 레진
+    ITEM_COMPOUND = 3,      // 화합물
+    ITEM_ORGANIC = 4,       // 유기물
 
     ITEM_COUNT             // 아이템 종류 수 (배열 크기, 범위 검사용). 실제 아이템 아님
 };

@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <array>
+#include <random>
+#include <numbers>
 
 #include "..\Shared\Protocol.h"
 
@@ -44,8 +46,18 @@ constexpr float PLAYER_SPAWN_Z = 50674.035581f;
 constexpr float PLAYER_INVULN_TIME = 1.f;
 
 // 아이템(채집) 관련 상수들
-constexpr int DIG_MIN_INTERVAL_MS = 90;         // 서버가 받아주는 파기/쌓기 최소 간격 (클라 VoxelCooldown 0.1초보다 살짝 여유)
+constexpr int DIG_MIN_INTERVAL_MS = 90;                     // 서버가 받아주는 파기/쌓기 최소 간격 (클라 VoxelCooldown 0.1초보다 살짝 여유)
 constexpr double SOIL_UNITS_PER_M3 = 1000.0 / 600.0;        // 통 하나(1000) = 600 m^3 (대략 꾹 누르고 1분)
+constexpr int RESOURCE_CLUSTER_COUNT = 20;                  // 행성 전체 군집 개수
+constexpr int RESOURCE_NODES_PER_CLUSTER_MIN = 3;           // 군집 하나의 최소 무더기 개수
+constexpr int RESOURCE_NODES_PER_CLUSTER_MAX = 6;           // 군집 하나의 최대 무더기 개수
+constexpr float RESOURCE_CLUSTER_SPREAD_CM = 1500.f;        // 군집 중심에서 무더기까지 최대 거리
+constexpr float RESOURCE_NODE_RADIUS_MIN_CM = 100.f;        // 무더기 최소 반지름
+constexpr float RESOURCE_NODE_RADIUS_MAX_CM = 250.f;        // 무더기 최대 반지름
+constexpr float RESOURCE_SINK_MIN_RATIO = 0.3f;             // 가장 얕게 묻을 때 (반지름의 몇 배)
+constexpr float RESOURCE_SINK_MAX_RATIO = 1.5f;             // 가장 깊게 묻을 때
+constexpr float RESOURCE_AMOUNT_PER_M = 50.f;               // 반지름 1m당 총량 (임시값, 게이지 한 칸 크기가 정해지면 조정)
+constexpr unsigned int RESOURCE_SEED = 20261114;            // 자원 배치용 고정 시드. 바꾸면 행성 전체 배치가 바뀜
 
 // 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = -476.030103f;
@@ -156,7 +168,7 @@ struct SESSION
 
     std::array<int, ITEM_COUNT> m_inventory{};                      // [아이템 번호] = 개수
     std::chrono::steady_clock::time_point m_last_dig_time{};        // 마지막으로 받아준 파기/쌓기 시각
-    double m_soil_frac = 0.0;                                       // 1 단위가 안 돼서 남은 흙 (다음 파기에 이어서 쌓임)
+    std::array<double, ITEM_COUNT> m_item_frac{};                   // 1 단위가 안 돼서 남은 자원들 (다음 파기에 이어서 쌓임)
 
 	// ==============================================================
     FClientTerrainState m_terrain;   // 이 클라가 가진 청크 버전
@@ -218,6 +230,40 @@ std::vector<std::pair<int, std::chrono::steady_clock::time_point>> g_pending_pla
 std::vector<std::pair<int, std::chrono::steady_clock::time_point>> g_pending_monster_respawn;
 
 std::mutex g_console_lock;                  // cout/cerr이 여러 스레드에서 섞이지 않게
+
+struct RESOURCE_NODE                        // 자원 무더기 하나 (ex. 레진 조각들이 뭉친 한 자리)
+{
+    ITEM_TYPE m_type = ITEM_SOIL;           // 어떤 자원인지 (캐면 이 아이템이 들어옴)
+    float m_x = 0.f;                        // 무더기 중심 위치 (cm)
+    float m_y = 0.f;
+    float m_z = 0.f;
+    float m_radius = 0.f;                   // 무더기 반지름 (cm). 거리 검사, 클라 표시용
+    float m_total_amount = 0.f;             // 처음 양
+    float m_remain_amount = 0.f;            // 남은 양. 0 이하면 다 캔 것
+};
+
+std::mutex g_resource_lock;                     // g_resource_nodes 전체를 보호
+std::vector<RESOURCE_NODE> g_resource_nodes;    // 행성의 모든 자원 무더기. 칸 번호 = 무더기 번호 (다 캐도 지우지 않음)
+
+// 자원 배치 전용 무작위 생성기
+// 기존 rand()는 srand(time)으로 매번 바뀌고 몬스터와도 섞이므로 따로 둔다
+// 고정 시드라서 서버를 켤 때마다 같은 배치가 나온다
+// 주의: 여러 쓰레드에서 동시에 쓰면 안 된다. 서버 시작 시 배치에서만 쓸 것
+std::mt19937 g_resource_rng(RESOURCE_SEED);
+
+// min 이상 max 이하의 실수 하나
+static float resource_rand_float(float min, float max)
+{
+    std::uniform_real_distribution<float> dist(min, max);
+    return dist(g_resource_rng);
+}
+
+// min 이상 max 이하의 정수 하나 (max도 포함)
+static int resource_rand_int(int min, int max)
+{
+    std::uniform_int_distribution<int> dist(min, max);
+    return dist(g_resource_rng);
+}
 
 void error_display(const char* msg, int err_no)
 {
@@ -321,7 +367,7 @@ void disconnect(int id)
     }
 }
 
-// 도현이가 추가한 코드 - 총알 발사할 때 호출되는 함수로, 다른 클라이언트에서 발사하는 총알 보려고 만듦
+// 총알 발사할 때 호출되는 함수로, 다른 클라이언트에서 발사하는 총알 보려고 만듦
 void broadcast_fire_event(SESSION* shooter, const cs_packet_player_fire* pkt)
 {
     sc_packet_player_fire fp;
@@ -412,7 +458,7 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
         editor->m_last_dig_time = now;
     }
 
-    // ① 검증: 너무 먼 곳을 파려고 하면 거부 (치팅 방지)
+    // 검증: 너무 먼 곳을 파려고 하면 거부 (치팅 방지)
     const float dx = pkt->m_x - editor->m_x;
     const float dy = pkt->m_y - editor->m_y;
     const float dz = pkt->m_z - editor->m_z;
@@ -428,6 +474,7 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
         printf("[terrain] 거부: 캐릭터와 겹침\n"); fflush(stdout);
         return;
     }
+    // 쌓기: 흙이 부족하면 거부
     if (pkt->m_op == 1)
     {
         std::lock_guard<std::mutex> lock(g_player_lock);
@@ -438,11 +485,11 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
         }
     }
 
-    // ② 이 락이 "편집 순서 = 방송 순서"를 보장한다
-    //    두 사람이 동시에 파도 모든 클라가 같은 순서로 받는다
+    // 이 락이 "편집 순서 = 방송 순서"를 보장한다
+    // 두 사람이 동시에 파도 모든 클라가 같은 순서로 받는다
     std::lock_guard<std::mutex> ol(g_edit_order_lock);
 
-    // ③ 서버가 자기 지형에 먼저 적용하고 버전을 매긴다
+    // 서버가 자기 지형에 먼저 적용하고 버전을 매긴다
     FEditResult R;
     const bool bChanged = g_field.ApplyEdit(pkt->m_op, pkt->m_x, pkt->m_y, pkt->m_z, pkt->m_radius,
         [&](const FEditResult& In) { R = In; });
@@ -453,7 +500,7 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
 
     if (!bChanged) return;   // 허공을 팠다든지 해서 바뀐 게 없으면 보낼 것도 없음
 
-    // ④ 방송 패킷 만들기
+    // 방송 패킷 만들기
     sc_packet_terrain_edit out{};
     out.m_size = sizeof(out);
     out.m_type = PKT_S2C_TERRAIN_EDIT;
@@ -472,7 +519,7 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
         out.m_touched[i].m_version = R.Versions[i];
     }
 
-    // ⑤ 본인 포함 전원에게 전송
+    // 본인 포함 전원에게 전송
     std::lock_guard<std::mutex> lock(g_player_lock);
     for (auto& [id, session] : g_players)
     {
@@ -480,15 +527,15 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
         FVoxelField::TrackEditSent(R, session.m_terrain);   // 이 클라가 받은 버전 기록
     }
 
-    // 흙 게이지: 파면 깎인 양만큼 채우고, 쌓으면 쌓은 양만큼 뺀다
+    // 흙 게이지: 파면 깎인 양만큼 채우고, 쌓으면 쌓은 양만큼 뺌
     const double units = R.ChangedSum / (2.0 * VoxelEdit::QMAX) * SOIL_UNITS_PER_M3;
     int& soil = editor->m_inventory[ITEM_SOIL];
 
     if (pkt->m_op == 0)
     {
-        editor->m_soil_frac += units;
-        const int whole = static_cast<int>(editor->m_soil_frac);        // 정수 부분만 지급
-        editor->m_soil_frac -= whole;                                   // 남은 소수는 통에 남김
+        editor->m_item_frac[ITEM_SOIL] += units;
+        const int whole = static_cast<int>(editor->m_item_frac[ITEM_SOIL]);        // 정수 부분만 지급
+        editor->m_item_frac[ITEM_SOIL] -= whole;                                   // 남은 소수는 통에 남김
 
         const int give = (std::min)(whole, SOIL_CAPACITY - soil);       // 통이 차면 넘친 흙은 버림
         if (give > 0) change_item(editor, ITEM_SOIL, +give);
@@ -1053,7 +1100,7 @@ static bool find_surface(float x, float y, float z, float dx, float dy, float dz
 // 몬스터를 땅 위에 올려놓는다 (생성할 때 사용).
 // 가장 높은 산보다 높은 곳에서 출발해 행성 중심 쪽으로 내려오다 처음 만나는 땅에 놓는다.
 static void place_monster_on_ground(MONSTER& m)
-// 생성할 때 몬스터를 땅 위에 올려놔요.
+// 생성할 때 몬스터를 땅 위에 올려줌.
 {
     const float len = std::sqrt(m.m_x * m.m_x + m.m_y * m.m_y + m.m_z * m.m_z);
     if (len < 1.f) return;
@@ -1069,6 +1116,116 @@ static void place_monster_on_ground(MONSTER& m)
         m.m_on_ground = true;
         m.m_fall_speed = 0.f;
     }
+}
+
+// 행성 위의 무작위 방향(길이 1)을 고르게 뽑는다.
+// z(높이)로 띠를 고르고, theta(각도)로 그 띠 위의 위치를 고른다.
+static void random_direction_on_sphere(float& out_x, float& out_y, float& out_z)
+{
+    const float z = resource_rand_float(-1.f, 1.f);                                         // 띠의 높이 (-1 = 남극, 1 = 북극)
+    const float theta = resource_rand_float(0.f, 2.f * std::numbers::pi_v<float>);          // 띠 위의 각도 (라디안, 0 ~ 2π)
+    const float r = std::sqrt(1.f - z * z);                                                 // 그 높이에서 자른 띠의 반지름
+
+    out_x = r * std::cos(theta);
+    out_y = r * std::sin(theta);
+    out_z = z;
+}
+
+// 중심 방향(cx, cy, cz) 근처의 무작위 방향(길이 1)을 뽑는다.
+// 중심에 작은 무작위 값을 더한 뒤 길이를 1로 되돌린다. 실제 행성에서 대략 spread_cm 안쪽으로 흩어진다.
+static void jitter_direction(float cx, float cy, float cz, float spread_cm, float& out_x, float& out_y, float& out_z)
+{
+    const float planet_r = static_cast<float>(g_planet.Radius() * VoxelEdit::VOXEL_SIZE);   // 행성 반지름 (cm)
+    const float offset_scale = spread_cm / planet_r;                                        // 흔들기 세기 (방향 공 기준. spread_cm을 행성 크기로 나눈 값)
+    const float x = cx + resource_rand_float(-offset_scale, offset_scale);                  // 중심 + 무작위 값 (아직 길이가 1이 아님)
+    const float y = cy + resource_rand_float(-offset_scale, offset_scale);
+    const float z = cz + resource_rand_float(-offset_scale, offset_scale);
+    const float len = std::sqrt(x * x + y * y + z * z);                                     // 위 x, y, z의 길이. 이걸로 나눠서 길이를 1로 맞춤
+
+    out_x = x / len;
+    out_y = y / len;
+    out_z = z / len;
+}
+
+
+// 방향(dx, dy, dz)의 땅 표면을 찾아 자원 무더기 하나를 박고 g_resource_nodes에 추가한다.
+// 표면에서 반지름 × (0.3 ~ 1.5)만큼 땅속으로 내려서, 튀어나오거나 얕게 묻히게 한다.
+// 땅을 못 찾으면 추가하지 않고 false를 돌려준다.
+// 반드시 g_resource_lock을 잡은 상태에서 부를 것
+static bool place_resource_node(float dx, float dy, float dz, ITEM_TYPE type)
+{
+    const float r = resource_rand_float(RESOURCE_NODE_RADIUS_MIN_CM, RESOURCE_NODE_RADIUS_MAX_CM);          // 무더기 반지름 (cm)
+    const float planet_r = static_cast<float>(g_planet.Radius() * VoxelEdit::VOXEL_SIZE);                   // 행성 반지름 (cm)
+    const float top = planet_r * 1.2f;                                                                      // 땅 찾기 출발 높이 (가장 높은 산보다 위)
+    float sx, sy, sz;                                                                                       // 찾은 땅 표면 위치
+    if (!find_surface(dx * top, dy * top, dz * top, -dx, -dy, -dz, planet_r * 0.4f, sx, sy, sz)) {
+        return false;
+    }
+    const float depth = r * resource_rand_float(RESOURCE_SINK_MIN_RATIO, RESOURCE_SINK_MAX_RATIO);          // 표면에서 땅속으로 내릴 거리 (cm)
+    const float x = sx - dx * depth;                                                                        // 무더기 중심 = 표면 - 방향 × 깊이
+    const float y = sy - dy * depth;
+    const float z = sz - dz * depth;
+    const float total_amount = (r / 100.f) * RESOURCE_AMOUNT_PER_M;                                         // 처음 양 = 반지름(m) × 1m당 양
+    RESOURCE_NODE node;
+    node.m_type = type;
+    node.m_x = x;
+    node.m_y = y;
+    node.m_z = z;
+    node.m_radius = r;
+    node.m_total_amount = total_amount;
+    node.m_remain_amount = total_amount;
+    g_resource_nodes.push_back(node);
+
+    return true;
+}
+
+// 서버 시작 시 행성에 자원 무더기를 배치한다. 서버 시작 때 한 번만 부를 것
+void spawn_initial_resources()
+{
+    std::lock_guard<std::mutex> lock(g_resource_lock);
+    
+    int fail_count = 0;         // 땅을 못 찾아서 못 놓은 무더기 수
+
+    // 동네(군집) 하나씩
+    for (int i = 0; i < RESOURCE_CLUSTER_COUNT; ++i) {
+        // 동네 중심 방향
+        float cx, cy, cz;
+        if (i == 0) {
+            cx = 0.f;
+            cy = 0.f;
+            cz = 1.f;
+        }
+        else {
+            random_direction_on_sphere(cx, cy, cz);
+        }
+
+        // 동네 자원 종류
+        const ITEM_TYPE type = resource_rand_int(0, 1) == 0 ? ITEM_RESIN : ITEM_COMPOUND;
+
+        // 동네 무더기 수
+        const int node_count = resource_rand_int(RESOURCE_NODES_PER_CLUSTER_MIN, RESOURCE_NODES_PER_CLUSTER_MAX);
+
+        // 무더기 하나 당
+        for (int j = 0; j < node_count; ++j) {
+            float dx, dy, dz;
+            jitter_direction(cx, cy, cz, RESOURCE_CLUSTER_SPREAD_CM, dx, dy, dz);
+
+            if (!place_resource_node(dx, dy, dz, type)) fail_count++;
+        }
+    }
+
+    // 결과 세기
+    int resin_count = 0;
+    int compound_count = 0;
+    for (const RESOURCE_NODE& n : g_resource_nodes)
+    {
+        if (n.m_type == ITEM_RESIN) ++resin_count;
+        else if (n.m_type == ITEM_COMPOUND) ++compound_count;
+    }
+
+    printf("[resource] 배치 완료: 총 %zu개 (레진 %d, 화합물 %d), 실패 %d\n",
+        g_resource_nodes.size(), resin_count, compound_count, fail_count);
+    fflush(stdout);
 }
 
 // 몬스터 한 마리에 한 턴만큼 중력을 적용한다.
@@ -1409,6 +1566,7 @@ int main()
 
     srand(static_cast<unsigned>(time(nullptr)));
     spawn_initial_monsters();
+    spawn_initial_resources();
 
     unsigned int worker_count = get_physical_core_count();
     if (worker_count == 0)
