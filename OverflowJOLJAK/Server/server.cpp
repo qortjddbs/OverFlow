@@ -48,16 +48,34 @@ constexpr float PLAYER_INVULN_TIME = 1.f;
 // 아이템(채집) 관련 상수들
 constexpr int DIG_MIN_INTERVAL_MS = 90;                     // 서버가 받아주는 파기/쌓기 최소 간격 (클라 VoxelCooldown 0.1초보다 살짝 여유)
 constexpr double SOIL_UNITS_PER_M3 = 1000.0 / 600.0;        // 통 하나(1000) = 600 m^3 (대략 꾹 누르고 1분)
-constexpr int RESOURCE_CLUSTER_COUNT = 20;                  // 행성 전체 군집 개수
-constexpr int RESOURCE_NODES_PER_CLUSTER_MIN = 3;           // 군집 하나의 최소 무더기 개수
-constexpr int RESOURCE_NODES_PER_CLUSTER_MAX = 6;           // 군집 하나의 최대 무더기 개수
-constexpr float RESOURCE_CLUSTER_SPREAD_CM = 1500.f;        // 군집 중심에서 무더기까지 최대 거리
-constexpr float RESOURCE_NODE_RADIUS_MIN_CM = 100.f;        // 무더기 최소 반지름
-constexpr float RESOURCE_NODE_RADIUS_MAX_CM = 250.f;        // 무더기 최대 반지름
-constexpr float RESOURCE_SINK_MIN_RATIO = 0.3f;             // 가장 얕게 묻을 때 (반지름의 몇 배)
-constexpr float RESOURCE_SINK_MAX_RATIO = 1.5f;             // 가장 깊게 묻을 때
-constexpr float RESOURCE_AMOUNT_PER_M = 50.f;               // 반지름 1m당 총량 (임시값, 게이지 한 칸 크기가 정해지면 조정)
-constexpr unsigned int RESOURCE_SEED = 20261114;            // 자원 배치용 고정 시드. 바꾸면 행성 전체 배치가 바뀜
+
+// 자원 배치 (송이를 행성 곳곳에 흩뿌림)
+constexpr int   RESOURCE_DEPOSIT_COUNT = 80;                // 행성 전체 송이 수
+constexpr int   RESOURCE_DEMO_DEPOSIT_COUNT = 6;            // 플레이어 시작 위치 근처 송이 수 (시연용)
+constexpr float RESOURCE_DEMO_SPREAD_CM = 1500.f;           // 송이가 흩어지는 범위 (시작 위치에서 약 15m - 시연용)
+constexpr unsigned int RESOURCE_SEED = 20261118;            // 자원 배치용 고정 시드. 바꾸면 행성 전체 배치가 바뀜
+
+// 송이/조각
+constexpr float DEPOSIT_CLUSTER_RADIUS = 150.f;   // 송이 중심에서 조각이 흩어지는 반경 (cm)
+constexpr int   DEPOSIT_PIECES_MIN = 10;          // 송이 하나의 최소 조각 수
+constexpr int   DEPOSIT_PIECES_MAX = 16;          // 송이 하나의 최대 조각 수 (16 넘으면 안 됨: 생존 표시가 16비트)
+constexpr float PIECE_SCALE_MIN = 0.6f;           // 조각 크기 배율 (축마다 따로 뽑음)
+constexpr float PIECE_SCALE_MAX = 1.6f;
+constexpr float PIECE_TILT_MAX = 0.45f;           // 조각 기울기 최대 (약 25도)
+constexpr float PIECE_SINK_MAX = 0.6f;            // 조각 높이의 최대 60%까지 땅에 묻힘
+constexpr float PIECE_GAUGE_BASE = 25.f;          // 기본 크기(1,1,1) 조각 하나를 먹으면 오르는 게이지
+constexpr float PIECE_GAUGE_EXP = 0.6f;           // 부피^0.6 -> 모든 축 2배인 조각은 약 3.5배
+constexpr float PIECE_EXPOSE_INSET = 0.7f;        // 드러남 검사점 위치: 조각 상자 겉면의 70% 안쪽
+
+// 레진 메시 크기 (배율 1 기준, cm)
+constexpr float RESIN_HALF_X = 53.f;
+constexpr float RESIN_HALF_Y = 55.5f;
+constexpr float RESIN_HALF_Z = 44.5f;
+constexpr float RESIN_PIVOT_TO_CENTER_Z = 44.5f;  // 메시 기준점이 바닥 중앙이라, 몸통 중심까지 반높이만큼 위
+
+// TODO: 클라 담당의 Shared 헤더를 받으면 이 두 줄 삭제 (헤더 값으로 대체)
+constexpr float DEPOSIT_PIECE_BASE_SCALE = 1.f;   // 조각 메시의 기본 배율 (임시값)
+constexpr float GAUGE_MAX = 100.f;                // 게이지가 이만큼 차면 아이템 1개 (임시값)
 
 // 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = -476.030103f;
@@ -166,7 +184,8 @@ struct SESSION
 
     std::array<int, ITEM_COUNT> m_inventory{};                      // [아이템 번호] = 개수
     std::chrono::steady_clock::time_point m_last_dig_time{};        // 마지막으로 받아준 파기/쌓기 시각
-    std::array<double, ITEM_COUNT> m_item_frac{};                   // 1 단위가 안 돼서 남은 자원들 (다음 파기에 이어서 쌓임)
+    std::array<double, ITEM_COUNT> m_item_frac{};                   // 흙 자투리 (1 단위가 안 돼서 남은 흙. 다음 파기에 이어서 쌓임)
+    std::array<float, ITEM_COUNT> m_gauge{};                        // 자원별 게이지 (GAUGE_MAX 넘으면 1개 지급, 남은 건 이월)
 
 	// ==============================================================
     FClientTerrainState m_terrain;   // 이 클라가 가진 청크 버전
@@ -229,19 +248,37 @@ std::vector<std::pair<int, std::chrono::steady_clock::time_point>> g_pending_mon
 
 std::mutex g_console_lock;                  // cout/cerr이 여러 스레드에서 섞이지 않게
 
-struct RESOURCE_NODE                        // 자원 무더기 하나 (ex. 레진 조각들이 뭉친 한 자리)
+// x, y, z를 한 덩어리로 다루려고 만든 구조체. a + b, a * 2 처럼 쓸 수 있게 연산자를 정의해 둔다.
+struct V3       { float x, y, z; };
+static V3       operator+(V3 a, V3 b) { return { a.x + b.x, a.y + b.y, a.z + b.z }; }       // 더하기
+static V3       operator-(V3 a, V3 b) { return { a.x - b.x, a.y - b.y, a.z - b.z }; }       // 빼기
+static V3       operator*(V3 a, float s) { return { a.x * s, a.y * s, a.z * s }; }          // 길이 늘이기/줄이기
+static float    dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }               // 내적
+static V3       cross(V3 a, V3 b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }   // 외적 (두 방향에 모두 수직인 방향)
+static V3       normalize(V3 a) { const float l = std::sqrt(dot(a, a)); return l > 0.f ? a * (1.f / l) : a; }           // 길이 1로
+
+static float ground_value(float x, float y, float z);   // 정의는 아래 (몬스터 중력 쪽). 조각 드러남 검사에서 먼저 써서 미리 선언
+
+// 조각 하나 (레진 메시 하나)
+struct DEPOSIT_PIECE
 {
-    ITEM_TYPE m_type = ITEM_SOIL;           // 어떤 자원인지 (캐면 이 아이템이 들어옴)
-    float m_x = 0.f;                        // 무더기 중심 위치 (cm)
-    float m_y = 0.f;
-    float m_z = 0.f;
-    float m_radius = 0.f;                   // 무더기 반지름 (cm). 거리 검사, 클라 표시용
-    float m_total_amount = 0.f;             // 처음 양
-    float m_remain_amount = 0.f;            // 남은 양. 0 이하면 다 캔 것
+    V3    P{};                              // 기준점 = 메시 바닥 중앙 (cm)
+    V3    X{}, Z{};                         // 조각의 로컬 X축, Z축 방향 (길이 1). Y축은 Z × X로 계산
+    float sx = 1.f, sy = 1.f, sz = 1.f;     // 축별 크기 배율
+    bool  alive = true;                     // 아직 안 먹혔으면 true
 };
 
-std::mutex g_resource_lock;                     // g_resource_nodes 전체를 보호
-std::vector<RESOURCE_NODE> g_resource_nodes;    // 행성의 모든 자원 무더기. 칸 번호 = 무더기 번호 (다 캐도 지우지 않음)
+// 송이 하나 (조각 10~16개가 모인 한 자리)
+struct DEPOSIT
+{
+    int           m_id = 0;                 // 송이 번호 (클라와 주고받을 때 씀. 1부터)
+    unsigned char m_item = ITEM_RESIN;      // 어떤 자원인지 (ITEM_TYPE)
+    V3            m_center{};               // 송이 중심 (땅 표면, cm)
+    std::vector<DEPOSIT_PIECE> m_pieces;    // 이 송이의 조각들
+};
+
+std::mutex g_deposit_lock;          // g_deposits 전체를 보호
+std::vector<DEPOSIT> g_deposits;    // 행성의 모든 송이. 다 먹은 송이는 목록에서 삭제 (번호는 칸 위치가 아니라 m_id)
 
 // 자원 배치 전용 무작위 생성기
 // 기존 rand()는 srand(time)으로 매번 바뀌고 몬스터와도 섞이므로 따로 둔다
@@ -1147,84 +1184,12 @@ static void jitter_direction(float cx, float cy, float cz, float spread_cm, floa
     out_z = z / len;
 }
 
-
-// 방향(dx, dy, dz)의 땅 표면을 찾아 자원 무더기 하나를 박고 g_resource_nodes에 추가한다.
-// 표면에서 반지름 × (0.3 ~ 1.5)만큼 땅속으로 내려서, 튀어나오거나 얕게 묻히게 한다.
-// 땅을 못 찾으면 추가하지 않고 false를 돌려준다.
-// 반드시 g_resource_lock을 잡은 상태에서 부를 것
-static bool place_resource_node(float dx, float dy, float dz, ITEM_TYPE type)
-{
-    const float r = resource_rand_float(RESOURCE_NODE_RADIUS_MIN_CM, RESOURCE_NODE_RADIUS_MAX_CM);          // 무더기 반지름 (cm)
-    const float planet_r = static_cast<float>(g_planet.Radius() * VoxelEdit::VOXEL_SIZE);                   // 행성 반지름 (cm)
-    const float top = planet_r * 1.2f;                                                                      // 땅 찾기 출발 높이 (가장 높은 산보다 위)
-    float sx, sy, sz;                                                                                       // 찾은 땅 표면 위치
-    if (!find_surface(dx * top, dy * top, dz * top, -dx, -dy, -dz, planet_r * 0.4f, sx, sy, sz)) {
-        return false;
-    }
-    const float depth = r * resource_rand_float(RESOURCE_SINK_MIN_RATIO, RESOURCE_SINK_MAX_RATIO);          // 표면에서 땅속으로 내릴 거리 (cm)
-    const float x = sx - dx * depth;                                                                        // 무더기 중심 = 표면 - 방향 × 깊이
-    const float y = sy - dy * depth;
-    const float z = sz - dz * depth;
-    const float total_amount = (r / 100.f) * RESOURCE_AMOUNT_PER_M;                                         // 처음 양 = 반지름(m) × 1m당 양
-    RESOURCE_NODE node;
-    node.m_type = type;
-    node.m_x = x;
-    node.m_y = y;
-    node.m_z = z;
-    node.m_radius = r;
-    node.m_total_amount = total_amount;
-    node.m_remain_amount = total_amount;
-    g_resource_nodes.push_back(node);
-
-    return true;
-}
-
-// 서버 시작 시 행성에 자원 무더기를 배치한다. 서버 시작 때 한 번만 부를 것
+// 서버 시작 시 행성에 자원 송이를 배치한다. 서버 시작 때 한 번만 부를 것
 void spawn_initial_resources()
 {
-    std::lock_guard<std::mutex> lock(g_resource_lock);
-    
-    int fail_count = 0;         // 땅을 못 찾아서 못 놓은 무더기 수
+    std::lock_guard<std::mutex> lock(g_deposit_lock);
 
-    // 동네(군집) 하나씩
-    for (int i = 0; i < RESOURCE_CLUSTER_COUNT; ++i) {
-        // 동네 중심 방향
-        float cx, cy, cz;
-        if (i == 0) {
-            cx = 0.f;
-            cy = 0.f;
-            cz = 1.f;
-        }
-        else {
-            random_direction_on_sphere(cx, cy, cz);
-        }
-
-        // 동네 자원 종류
-        const ITEM_TYPE type = resource_rand_int(0, 1) == 0 ? ITEM_RESIN : ITEM_COMPOUND;
-
-        // 동네 무더기 수
-        const int node_count = resource_rand_int(RESOURCE_NODES_PER_CLUSTER_MIN, RESOURCE_NODES_PER_CLUSTER_MAX);
-
-        // 무더기 하나 당
-        for (int j = 0; j < node_count; ++j) {
-            float dx, dy, dz;
-            jitter_direction(cx, cy, cz, RESOURCE_CLUSTER_SPREAD_CM, dx, dy, dz);
-
-            if (!place_resource_node(dx, dy, dz, type)) fail_count++;
-        }
-    }
-
-    // 결과 세기
-    int resin_count = 0;
-    int compound_count = 0;
-    for (const RESOURCE_NODE& n : g_resource_nodes)
-    {
-        if (n.m_type == ITEM_RESIN) ++resin_count;
-        else if (n.m_type == ITEM_COMPOUND) ++compound_count;
-    }
-
-    printf("[resource] 배치 완료: 총 %zu개 (레진 %d, 화합물 %d), 실패 %d\n",
-        g_resource_nodes.size(), resin_count, compound_count, fail_count);
+    printf("[resource] 송이 %zu개 배치\n", g_deposits.size());
     fflush(stdout);
 }
 
