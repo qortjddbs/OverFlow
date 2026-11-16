@@ -1180,12 +1180,115 @@ static void jitter_direction(float cx, float cy, float cz, float spread_cm, floa
     out_z = z / len;
 }
 
+// 위치를 그 방향의 땅 표면으로 옮긴다 (높은 곳에서 중심 방향으로 내려오며 첫 땅). 못 찾으면 false
+static bool snap_to_ground(float& x, float& y, float& z)
+{
+    const float len = std::sqrt(x * x + y * y + z * z);
+    if (len < 1.f) return false;
+    const float ux = x / len, uy = y / len, uz = z / len;
+
+    const float planet_r = static_cast<float>(g_planet.Radius() * VoxelEdit::VOXEL_SIZE);
+    const float top = planet_r * 1.2f;
+    return find_surface(ux * top, uy * top, uz * top, -ux, -uy, -uz, planet_r * 0.4f, x, y, z);
+}
+
+// up에 수직인 두 방향 (그 자리에서 땅과 나란한 두 방향)
+static void tangent_basis(V3 up, V3& t1, V3& t2)
+{
+    const V3 a = std::fabs(up.z) > 0.9f ? V3{ 1, 0, 0 } : V3{ 0, 0, 1 };   // up과 거의 같은 방향은 피해서 아무 방향 하나
+    t1 = normalize(cross(a, up));
+    t2 = cross(up, t1);
+}
+
+// 방향 dir의 땅 표면에 송이 하나(조각 10~16개)를 만들어 g_deposits에 추가한다. 땅을 못 찾으면 추가하지 않고 false
+// 반드시 g_deposit_lock을 잡은 상태에서 부를 것
+static bool build_deposit(V3 dir, unsigned char item)
+{
+    const float planet_r = static_cast<float>(g_planet.Radius() * VoxelEdit::VOXEL_SIZE);   // 행성 반지름 (cm)
+
+    // 송이 중심 = 그 방향의 땅 표면
+    V3 c = dir * planet_r;
+    if (!snap_to_ground(c.x, c.y, c.z)) return false;
+
+    DEPOSIT dep;
+    dep.m_id = static_cast<int>(g_deposits.size()) + 1;     // 1부터 차례대로 (서버 시작 때만 만들어서 겹치지 않음)
+    dep.m_item = item;
+    dep.m_center = c;
+
+    V3 c1, c2;                                              // 송이 중심에서 땅과 나란한 두 방향
+    tangent_basis(normalize(c), c1, c2);
+
+    const int n = resource_rand_int(DEPOSIT_PIECES_MIN, DEPOSIT_PIECES_MAX);   // 이 송이의 조각 수
+    for (int i = 0; i < n; ++i)
+    {
+        // 송이 안에서 조각 위치 (반경 DEPOSIT_CLUSTER_RADIUS 원 안에 고르게)
+        const float a2 = resource_rand_float(0.f, 2.f * std::numbers::pi_v<float>);
+        const float r2 = std::sqrt(resource_rand_float(0.f, 1.f)) * DEPOSIT_CLUSTER_RADIUS;
+        V3 p = c + (c1 * cosf(a2) + c2 * sinf(a2)) * r2;
+        if (!snap_to_ground(p.x, p.y, p.z)) continue;
+
+        DEPOSIT_PIECE pc;
+        pc.sx = resource_rand_float(PIECE_SCALE_MIN, PIECE_SCALE_MAX);
+        pc.sy = resource_rand_float(PIECE_SCALE_MIN, PIECE_SCALE_MAX);
+        pc.sz = resource_rand_float(PIECE_SCALE_MIN, PIECE_SCALE_MAX);
+
+        // 방향: 그 자리의 "위"에서 조금 기울이고, 제자리에서 무작위로 돌림
+        const V3 pu = normalize(p);
+        V3 p1, p2;
+        tangent_basis(pu, p1, p2);
+        pc.Z = normalize(pu + p1 * resource_rand_float(-PIECE_TILT_MAX, PIECE_TILT_MAX)
+            + p2 * resource_rand_float(-PIECE_TILT_MAX, PIECE_TILT_MAX));
+        const float spin = resource_rand_float(0.f, 2.f * std::numbers::pi_v<float>);
+        const V3 xr = p1 * cosf(spin) + p2 * sinf(spin);
+        pc.X = normalize(xr - pc.Z * dot(xr, pc.Z));       // Z와 정확히 수직이 되게 보정
+
+        // 무작위 깊이로 묻기 (높이의 0 ~ 60%. 항상 일부는 땅 위로 보임)
+        const float height = RESIN_HALF_Z * 2.f * DEPOSIT_PIECE_BASE_SCALE * pc.sz;
+        pc.P = p - pu * (height * resource_rand_float(0.f, PIECE_SINK_MAX));
+
+        dep.m_pieces.push_back(pc);
+    }
+
+    if (dep.m_pieces.empty()) return false;
+    g_deposits.push_back(dep);
+    return true;
+}
+
 // 서버 시작 시 행성에 자원 송이를 배치한다. 서버 시작 때 한 번만 부를 것
 void spawn_initial_resources()
 {
     std::lock_guard<std::mutex> lock(g_deposit_lock);
+    int fail_count = 0;                                     // 땅을 못 찾아서 못 놓은 송이 수
 
-    printf("[resource] 송이 %zu개 배치\n", g_deposits.size());
+    // 1) 시연용: 플레이어 시작 위치 근처, 레진/화합물 번갈아
+    const V3 spawn_dir = normalize(V3{ PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z });
+    for (int i = 0; i < RESOURCE_DEMO_DEPOSIT_COUNT; ++i)
+    {
+        V3 d;
+        jitter_direction(spawn_dir.x, spawn_dir.y, spawn_dir.z, RESOURCE_DEMO_SPREAD_CM, d.x, d.y, d.z);
+        const unsigned char item = (i % 2 == 0) ? ITEM_RESIN : ITEM_COMPOUND;
+        if (!build_deposit(d, item)) ++fail_count;
+    }
+
+    // 2) 행성 전체
+    for (int i = 0; i < RESOURCE_DEPOSIT_COUNT; ++i)
+    {
+        V3 d;
+        random_direction_on_sphere(d.x, d.y, d.z);
+        const unsigned char item = (resource_rand_int(0, 1) == 0) ? ITEM_RESIN : ITEM_COMPOUND;
+        if (!build_deposit(d, item)) ++fail_count;
+    }
+
+    // 결과 세기
+    int resin = 0, compound = 0, pieces = 0;
+    for (const DEPOSIT& dep : g_deposits)
+    {
+        if (dep.m_item == ITEM_RESIN) ++resin;
+        else if (dep.m_item == ITEM_COMPOUND) ++compound;
+        pieces += static_cast<int>(dep.m_pieces.size());
+    }
+    printf("[resource] 송이 %zu개 (레진 %d, 화합물 %d), 조각 %d개, 실패 %d\n",
+        g_deposits.size(), resin, compound, pieces, fail_count);
     fflush(stdout);
 }
 
@@ -1201,7 +1304,7 @@ static void apply_monster_gravity(MONSTER& mon, float dt, float prev_x, float pr
 
     float sx, sy, sz;   // 찾은 땅 표면 위치
 
-    // ① 땅속에 들어가 있으면 (오르막을 걸었거나, 누가 위에 땅을 쌓았을 때) 위로 올린다
+    // 땅속에 들어가 있으면 (오르막을 걸었거나, 누가 위에 땅을 쌓았을 때) 위로 올린다
     if (ground_value(mon.m_x, mon.m_y, mon.m_z) < 0.f)
     {
         if (find_surface(mon.m_x, mon.m_y, mon.m_z, ux, uy, uz, MONSTER_STEP_CM, sx, sy, sz))
@@ -1218,7 +1321,7 @@ static void apply_monster_gravity(MONSTER& mon, float dt, float prev_x, float pr
         return;
     }
 
-    // ② 땅 위를 걷는 중이면, 발밑 가까이에 땅이 있는 동안은 표면에 붙인다 (내리막 따라가기)
+    // 땅 위를 걷는 중이면, 발밑 가까이에 땅이 있는 동안은 표면에 붙인다 (내리막 따라가기)
     if (mon.m_on_ground)
     {
         if (find_surface(mon.m_x, mon.m_y, mon.m_z, -ux, -uy, -uz, MONSTER_STEP_CM, sx, sy, sz))
@@ -1231,7 +1334,7 @@ static void apply_monster_gravity(MONSTER& mon, float dt, float prev_x, float pr
         mon.m_fall_speed = 0.f;
     }
 
-    // ③ 떨어지는 중: 속도를 키우고 그만큼 내려간다. 가는 길에 땅이 있으면 착지
+    // 떨어지는 중: 속도를 키우고 그만큼 내려간다. 가는 길에 땅이 있으면 착지
     mon.m_fall_speed += MONSTER_GRAVITY * dt;
     const float drop = mon.m_fall_speed * dt;
 
