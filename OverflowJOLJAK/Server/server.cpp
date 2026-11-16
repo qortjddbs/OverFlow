@@ -56,26 +56,22 @@ constexpr float RESOURCE_DEMO_SPREAD_CM = 1500.f;           // 송이가 흩어�
 constexpr unsigned int RESOURCE_SEED = 20261118;            // 자원 배치용 고정 시드. 바꾸면 행성 전체 배치가 바뀜
 
 // 송이/조각
-constexpr float DEPOSIT_CLUSTER_RADIUS = 150.f;   // 송이 중심에서 조각이 흩어지는 반경 (cm)
-constexpr int   DEPOSIT_PIECES_MIN = 10;          // 송이 하나의 최소 조각 수
-constexpr int   DEPOSIT_PIECES_MAX = 16;          // 송이 하나의 최대 조각 수 (16 넘으면 안 됨: 생존 표시가 16비트)
-constexpr float PIECE_SCALE_MIN = 0.6f;           // 조각 크기 배율 (축마다 따로 뽑음)
-constexpr float PIECE_SCALE_MAX = 1.6f;
-constexpr float PIECE_TILT_MAX = 0.45f;           // 조각 기울기 최대 (약 25도)
-constexpr float PIECE_SINK_MAX = 0.6f;            // 조각 높이의 최대 60%까지 땅에 묻힘
-constexpr float PIECE_GAUGE_BASE = 25.f;          // 기본 크기(1,1,1) 조각 하나를 먹으면 오르는 게이지
-constexpr float PIECE_GAUGE_EXP = 0.6f;           // 부피^0.6 -> 모든 축 2배인 조각은 약 3.5배
-constexpr float PIECE_EXPOSE_INSET = 0.7f;        // 드러남 검사점 위치: 조각 상자 겉면의 70% 안쪽
+constexpr float DEPOSIT_CLUSTER_RADIUS = 150.f;                     // 송이 중심에서 조각이 흩어지는 반경 (cm)
+constexpr int   DEPOSIT_PIECES_MIN = 10;                            // 송이 하나의 최소 조각 수
+constexpr int   DEPOSIT_PIECES_MAX = MAX_DEPOSIT_PIECES;            // 송이 하나의 최대 조각 수 (unsigned short -> 16개)
+constexpr float PIECE_SCALE_MIN = 0.6f;                             // 조각 크기 최소 배율 (축마다 따로 뽑음)
+constexpr float PIECE_SCALE_MAX = 1.6f;                             // 조각 크기 최대 배율
+constexpr float PIECE_TILT_MAX = 0.45f;                             // 조각 기울기 최대 (약 25도)
+constexpr float PIECE_SINK_MAX = 0.6f;                              // 조각 높이의 최대 60%까지 땅에 묻힘
+constexpr float PIECE_GAUGE_BASE = 25.f;                            // 기본 크기(1,1,1) 조각 하나를 먹으면 오르는 게이지
+constexpr float PIECE_GAUGE_EXP = 0.6f;                             // 부피^0.6 -> 모든 축 2배인 조각은 약 3.5배
+constexpr float PIECE_EXPOSE_INSET = 0.7f;                          // 드러남 검사점 위치: 조각 상자 겉면의 70% 안쪽
 
 // 레진 메시 크기 (배율 1 기준, cm)
 constexpr float RESIN_HALF_X = 53.f;
 constexpr float RESIN_HALF_Y = 55.5f;
 constexpr float RESIN_HALF_Z = 44.5f;
 constexpr float RESIN_PIVOT_TO_CENTER_Z = 44.5f;  // 메시 기준점이 바닥 중앙이라, 몸통 중심까지 반높이만큼 위
-
-// TODO: 클라 담당의 Shared 헤더를 받으면 이 두 줄 삭제 (헤더 값으로 대체)
-constexpr float DEPOSIT_PIECE_BASE_SCALE = 1.f;   // 조각 메시의 기본 배율 (임시값)
-constexpr float GAUGE_MAX = 100.f;                // 게이지가 이만큼 차면 아이템 1개 (임시값)
 
 // 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = -476.030103f;
