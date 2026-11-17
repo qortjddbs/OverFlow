@@ -33,7 +33,15 @@
 constexpr unsigned short LISTEN_PORT = 7777;
 constexpr int MAX_BUF_SIZE = 4096;
 constexpr int HEADER_SIZE = sizeof(PACKET_HEADER);
-constexpr int MAX_PACKET_SIZE = sizeof(sc_packet_add_player);  // 존재하는 패킷 중 제일 큰 거
+// 클라 -> 서버 패킷 중 제일 큰 것 (클라 -> 서버 패킷을 새로 만들면 이 목록에 꼭 추가할 것)
+constexpr int MAX_PACKET_SIZE = static_cast<int>((std::max)({
+    sizeof(cs_packet_player_move),
+    sizeof(cs_packet_player_attack),
+    sizeof(cs_packet_player_fire),
+    sizeof(cs_packet_dig),
+    sizeof(cs_packet_build),
+    sizeof(cs_packet_terrain_edit),
+    sizeof(cs_packet_terrain_want) }));
 constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 
 // 플레이어 관련 상수들
@@ -905,7 +913,9 @@ void handle_player_attack(SESSION* attacker, cs_packet_player_attack* pkt)
 }
 
 // TCP 패킷 재조립
-void process_packet(SESSION* p, int bytes_transferred)
+// 받은 데이터를 패킷 단위로 잘라서 처리한다.
+// 크기가 말이 안 되는 패킷이 오면 false (부른 쪽에서 연결을 끊을 것)
+bool process_packet(SESSION* p, int bytes_transferred)
 {
     // memcpy (복사받을 곳 - 포인터, 복사할 곳 - 포인터, 복사할 데이터의 길이)
     memcpy(p->m_prev_buf + p->m_prev_size, p->m_recv_over.m_netbuf, bytes_transferred);
@@ -915,6 +925,14 @@ void process_packet(SESSION* p, int bytes_transferred)
     while (data_size >= HEADER_SIZE)
     {
         PACKET_HEADER* header = reinterpret_cast<PACKET_HEADER*>(ptr);
+        // 크기 검사: 헤더보다 작거나(0 포함) 받을 수 있는 최대보다 크면 잘못된 패킷
+        if (header->m_size < HEADER_SIZE || header->m_size > MAX_PACKET_SIZE)
+        {
+            printf("[server] 잘못된 패킷 크기 %d (type=%d), client %d 연결 끊음\n",
+                header->m_size, header->m_type, p->m_id);
+            fflush(stdout);
+            return false;
+        }
         if (data_size < header->m_size)
         {
             break; // 더 올게 남았을 때
@@ -984,6 +1002,8 @@ void process_packet(SESSION* p, int bytes_transferred)
         memcpy(p->m_prev_buf, ptr, data_size);
     }
     p->m_prev_size = data_size;
+
+    return true;
 }
 
 void worker_thread()
@@ -1010,7 +1030,11 @@ void worker_thread()
             continue;
         }
 
-        process_packet(p, bytes_transferred);
+        if (!process_packet(p, bytes_transferred))      // 잘못된 패킷이면 끊기
+        {
+            disconnect(p->m_id);
+            continue;
+        }
 
         if (!post_recv(p))
         {
