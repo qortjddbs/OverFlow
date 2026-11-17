@@ -138,6 +138,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Shared\Protocol.h" />
+    <ClInclude Include="..\Shared\ProtocolCraft.h" />
     <ClInclude Include="..\Shared\ProtocolItem.h" />
     <ClInclude Include="..\Shared\ProtocolTerrain.h" />
     <ClInclude Include="Terrain\VoxelField.h" />

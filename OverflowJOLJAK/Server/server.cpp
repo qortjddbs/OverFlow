@@ -41,7 +41,10 @@ constexpr int MAX_PACKET_SIZE = static_cast<int>((std::max)({
     sizeof(cs_packet_dig),
     sizeof(cs_packet_build),
     sizeof(cs_packet_terrain_edit),
-    sizeof(cs_packet_terrain_want) }));
+    sizeof(cs_packet_terrain_want),
+    sizeof(cs_packet_craft),
+    sizeof(cs_packet_object_grab),
+    sizeof(cs_packet_object_drag) }));
 constexpr int PREV_BUF_SIZE = MAX_BUF_SIZE + MAX_PACKET_SIZE;
 
 // 플레이어 관련 상수들
@@ -80,6 +83,9 @@ constexpr float RESIN_HALF_X = 53.f;
 constexpr float RESIN_HALF_Y = 55.5f;
 constexpr float RESIN_HALF_Z = 44.5f;
 constexpr float RESIN_PIVOT_TO_CENTER_Z = 44.5f;  // 메시 기준점이 바닥 중앙이라, 몸통 중심까지 반높이만큼 위
+
+// 모듈(시설) 관련 상수들
+constexpr float START_PRINTER_DIST_CM = 500.f;   // 시작 위치에서 소형 프린터까지 거리 (5m)
 
 // 몬스터 관련 상수들
 constexpr float MONSTER_SPAWN_POSITION_X = -476.030103f;
@@ -283,6 +289,23 @@ struct DEPOSIT
 
 std::mutex g_deposit_lock;          // g_deposits 전체를 보호
 std::vector<DEPOSIT> g_deposits;    // 행성의 모든 자원 무리. 다 먹은 자원 무리는 목록에서 삭제 (번호는 칸 위치가 아니라 m_id)
+
+// 모듈 (시설)
+struct OBJECT
+{
+    int m_id;               
+    unsigned char m_type;       // OBJECT_TYPE
+    V3 m_pos;                  // 바닥 중앙 위치
+    V3 m_x;                   // 앞 방향 (땅과 나란함)
+    V3 m_z;                   // 위 방향 (= 그 자리에서의 행성 바깥 방향)
+    int m_holder = NO_HOLDER;   // 잡고 있는 플레이어 id
+};
+
+std::mutex g_object_lock;
+std::unordered_map<int, OBJECT> g_objects;      // 시설 id -> 시설
+int g_next_object_id = 0;
+static sc_packet_object_add make_object_add(const OBJECT& o);
+void handle_craft(SESSION* p, const cs_packet_craft* pkt);
 
 // 자원 배치 전용 무작위 생성기
 // 기존 rand()는 srand(time)으로 매번 바뀌고 몬스터와도 섞이므로 따로 둔다
@@ -988,6 +1011,12 @@ bool process_packet(SESSION* p, int bytes_transferred)
             handle_terrain_edit(p, pkt);
             break;
         }
+        case PKT_C2S_CRAFT:
+        {
+            cs_packet_craft* pkt = reinterpret_cast<cs_packet_craft*>(ptr);
+            handle_craft(p, pkt);
+            break;
+        }
         default:
             break; // 모르는 타입은 일단 무시
         }
@@ -1183,6 +1212,17 @@ void send_deposit_list(SESSION* s)
     }
 }
 
+// 접속한 클라에게 모든 시설(위치/방향/잡은 사람)을 보낸다
+void send_object_list(SESSION* s)
+{
+    std::lock_guard<std::mutex> lock(g_object_lock);
+    for (const auto& [id, o] : g_objects)
+    {
+        sc_packet_object_add oa = make_object_add(o);
+        send_packet(s, &oa, sizeof(oa));
+    }
+}
+
 // accept는 일단 블로킹으로
 void accept_loop()
 {
@@ -1235,6 +1275,7 @@ void accept_loop()
         add_player_notification(p);
         send_monster_list(p);
         send_deposit_list(p);
+        send_object_list(p);
         send_terrain_edit_list(p);
     }
 }
@@ -1421,6 +1462,123 @@ static bool build_deposit(V3 dir, unsigned char item)
     if (dep.m_pieces.empty()) return false;
     g_deposits.push_back(dep);
     return true;
+}
+
+// pos 근처 땅에 시설 하나를 놓고 id를 돌려준다. 땅을 못 찾으면 -1
+// forward: 원하는 앞 방향 (대충이어도 됨. 땅과 나란하게 서버가 고친다)
+// 반드시 g_object_lock을 잡은 상태에서 부를 것
+static int place_object(unsigned char type, V3 pos, V3 forward)
+{
+    if (!snap_to_ground(pos.x, pos.y, pos.z)) return -1;
+
+    OBJECT o;
+    o.m_id = g_next_object_id++;
+    o.m_type = type;
+    o.m_pos = pos;
+    o.m_z = normalize(pos);             // 위 = 행성 바깥 방향
+    V3 x = forward - o.m_z * dot(forward, o.m_z);               // 앞에서 '위' 성분을 빼고 땅과 나란하게
+    if (dot(x, x) < 1e-6f) { V3 t2; tangent_basis(o.m_z, x, t2); }      // 앞이 거의 위를 향하면 아무 방향으로
+    o.m_x = normalize(x);
+
+    g_objects[o.m_id] = o;
+    printf("[object] 시설 %d 생성 (type=%d)\n", o.m_id, type);
+    return o.m_id;
+}
+
+// 서버의 시설 위치/방향을 패킷용 모양으로 바꾼다
+static obj_transform_net to_transform_net(const OBJECT& o)
+{
+    obj_transform_net t;
+    t.m_x = o.m_pos.x;  t.m_y = o.m_pos.y;  t.m_z = o.m_pos.z;      // 바닥 중앙
+    t.m_xx = o.m_x.x;   t.m_xy = o.m_x.y;   t.m_xz = o.m_x.z;       // 앞
+    t.m_zx = o.m_z.x;   t.m_zy = o.m_z.y;   t.m_zz = o.m_z.z;       // 위
+    return t;
+}
+
+// 시설 하나의 생성 패킷을 만든다 (접속 시 목록, 제작 완료 방송에 같이 사용)
+static sc_packet_object_add make_object_add(const OBJECT& o)
+{
+    sc_packet_object_add oa{};
+    oa.m_size = sizeof(oa);
+    oa.m_type = PKT_S2C_OBJECT_ADD;
+    oa.m_id = o.m_id;
+    oa.m_obj_type = o.m_type;               
+    oa.m_holder = o.m_holder;
+    oa.m_t = to_transform_net(o);
+    return oa;
+}
+
+// 제작 결과를 요청한 사람에게만 보낸다
+static void send_craft_result(SESSION* s, unsigned char recipe, unsigned char result, int object_id)
+{
+    sc_packet_craft_result cr{};
+    cr.m_size = sizeof(cr);
+    cr.m_type = PKT_S2C_CRAFT_RESULT;
+    cr.m_recipe = recipe;
+    cr.m_result = result;
+    cr.m_object_id = object_id;
+    send_packet(s, &cr, sizeof(cr));
+
+    printf("[craft] client %d 레시피 %d 결과=%d (시설 %d)\n", s->m_id, recipe, result, object_id);
+    fflush(stdout);
+}
+
+// 제작 요청: 검사 -> 시설 생성 -> 재료 차감 -> 모두에게 생성 방송 -> 요청자에게 결과
+// 잠금 순서: 플레이어 잠금 -> 시설 잠금 (항상 이 순서로. 반대로 잡는 곳이 생기면 데드락)
+void handle_craft(SESSION* p, const cs_packet_craft* pkt)
+{
+    const unsigned char r = pkt->m_recipe;
+    if (r >= RECIPE_COUNT) { send_craft_result(p, r, CRAFT_BAD_RECIPE, -1); return; }
+    const Recipe& rec = RECIPES[r];
+
+    std::lock_guard<std::mutex> pl(g_player_lock);
+    std::lock_guard<std::mutex> ol(g_object_lock);
+
+    // 시설 검사
+    auto it = g_objects.find(pkt->m_printer_id);
+    if (it == g_objects.end()) { send_craft_result(p, r, CRAFT_BAD_PRINTER, -1);   return; }
+    const OBJECT printer = it->second;       // 복사해 둠 (아래 place_object가 g_objects에 추가하면 it가 무효가 될 수 있음)
+    if (rec.station != printer.m_type) { send_craft_result(p, r, CRAFT_WRONG_STATION, -1); return; }
+    if (printer.m_holder != NO_HOLDER) { send_craft_result(p, r, CRAFT_NOT_ACTIVE, -1);    return; }
+
+    // 거리 검사 (플레이어 <-> 시설)
+    const V3 d = V3{ p->m_x, p->m_y, p->m_z } - printer.m_pos;
+    if (dot(d, d) > INTERACT_RANGE_CM * INTERACT_RANGE_CM) { send_craft_result(p, r, CRAFT_TOO_FAR, -1); return; }
+
+    // 재료 검사 (아직 빼지 않음)
+    for (int i = 0; i < rec.num_inputs; ++i)
+    {
+        if (p->m_inventory[rec.inputs[i].item] < rec.inputs[i].count)
+        {
+            send_craft_result(p, r, CRAFT_NO_MATERIAL, -1);
+            return;
+        }
+    }
+
+    // 시설 생성: 프린터 왼쪽 CRAFT_SPAWN_DIST_CM, 프린터와 같은 방향을 보게
+    const V3 left = cross(printer.m_x, printer.m_z);      // 언리얼 기준 Z x X = 오른쪽 -> 순서를 바꾸면 왼쪽
+    const int new_id = place_object(rec.output, printer.m_pos + left * CRAFT_SPAWN_DIST_CM, printer.m_x);
+    if (new_id < 0) { send_craft_result(p, r, CRAFT_NO_SPACE, -1); return; }
+
+    // 재료 차감 (생성이 성공한 뒤에만)
+    for (int i = 0; i < rec.num_inputs; ++i)
+        change_item(p, rec.inputs[i].item, -static_cast<int>(rec.inputs[i].count));
+
+    // 모두에게 생성 방송 (본인 포함), 요청자에게 결과
+    const sc_packet_object_add oa = make_object_add(g_objects[new_id]);
+    for (auto& [id, session] : g_players) send_packet(&session, &oa, sizeof(oa));
+    send_craft_result(p, r, CRAFT_OK, new_id);
+}
+
+// 서버 시작 시 미리 놓는 시설 (소형 프린터 1대)
+void spawn_initial_objects()
+{
+    const V3 spawn = { PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z };
+    V3 side, t2;
+    tangent_basis(normalize(spawn), side, t2);
+
+    std::lock_guard<std::mutex> lk(g_object_lock);
+    place_object(OBJ_SMALL_PRINTER, spawn + side * START_PRINTER_DIST_CM, side * -1.f);         // 시작 위치를 바라보게
 }
 
 // 서버 시작 시 행성에 자원 무리를 배치한다. 서버 시작 때 한 번만 부를 것
@@ -1756,7 +1914,7 @@ void monster_ai_tick()      // 별도 쓰레드가 실행
 
 int main()
 {
-    TestPlanet();      // ← 추가
+    TestPlanet();
 
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0)
@@ -1800,6 +1958,7 @@ int main()
     srand(static_cast<unsigned>(time(nullptr)));
     spawn_initial_monsters();
     spawn_initial_resources();
+    spawn_initial_objects();
 
     unsigned int worker_count = get_physical_core_count();
     if (worker_count == 0)
