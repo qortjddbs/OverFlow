@@ -26,11 +26,17 @@
 #include "Inventory/ItemTypes.h"
 #include "Components/CapsuleComponent.h"
 
+#include "Engine/StaticMeshActor.h"
+#include "Components/StaticMeshComponent.h"
+
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 
 UNetSyncComponent::UNetSyncComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
     Inventory.SetNumZeroed(ITEM_COUNT);
+    Gauges.SetNumZeroed(ITEM_COUNT);
 }
 
 void UNetSyncComponent::BeginPlay()
@@ -49,7 +55,6 @@ void UNetSyncComponent::BeginPlay()
     if (AActor* Owner = GetOwner())
     {
         Owner->GetWorldTimerManager().SetTimer(SendTimerHandle, this, &UNetSyncComponent::SendPositionTick, 1.0f / 30.0f, true);
-        Owner->GetWorldTimerManager().SetTimer(RecvTimerHandle, this, &UNetSyncComponent::ReceiveFromServer, 0.03f, true);
     }
 
     ValidateItemTable();
@@ -306,6 +311,218 @@ AVoxelWorld* UNetSyncComponent::GetVoxelWorld()
     return CachedVoxelWorld.Get();
 }
 
+AActor* UNetSyncComponent::FindPlayerActor(int32 Id) const
+{
+    if (Id == MyId) return GetOwner();
+    if (AActor* const* Found = RemotePlayers.Find(Id)) return *Found;
+    return nullptr;
+}
+
+USceneComponent* UNetSyncComponent::FindSuctionPoint(AActor* Actor, FName& OutSocket) const
+{
+    OutSocket = NAME_None;
+    if (!Actor) return nullptr;
+
+    // ① Suction 태그가 달린 컴포넌트
+    if (USceneComponent* C = Actor->FindComponentByTag<USceneComponent>(SuctionTag)) return C;
+
+    // ② 캐릭터 + 캐릭터에 붙은 액터(무기)에서 발사 소켓을 가진 컴포넌트
+    TArray<AActor*> Actors;
+    Actors.Add(Actor);
+    Actor->GetAttachedActors(Actors, false, true);
+
+    for (AActor* Each : Actors)
+    {
+        TArray<USceneComponent*> Comps;
+        Each->GetComponents(Comps);
+        for (USceneComponent* C : Comps)
+        {
+            if (C->DoesSocketExist(MuzzleSocketName))
+            {
+                OutSocket = MuzzleSocketName;
+                return C;
+            }
+        }
+    }
+
+    // ③ 못 찾으면 캐릭터 중심
+    return Actor->GetRootComponent();
+}
+
+void UNetSyncComponent::HandleDepositAdd(const sc_packet_deposit_add& Pkt)
+{
+    if (Deposits.Contains(Pkt.m_id)) return;
+
+    FItemRow Row;
+    if (!FindItemRow(Pkt.m_item, Row) || !Row.DepositMesh)
+    {
+        UE_LOG(LogTemp, Error, TEXT("[Deposit] ItemId %d 의 DepositMesh 없음"), Pkt.m_item);
+        return;
+    }
+
+    // 송이 하나 = 액터 하나 + 인스턴스 메시 (조각 = 인스턴스)
+    AActor* Holder = GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity);
+    UInstancedStaticMeshComponent* ISM = NewObject<UInstancedStaticMeshComponent>(Holder);
+    Holder->SetRootComponent(ISM);
+    ISM->SetMobility(EComponentMobility::Movable);
+    ISM->SetStaticMesh(Row.DepositMesh);
+    ISM->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    ISM->RegisterComponent();
+
+    FDepositView View;
+    View.ISM = ISM;
+
+    const int32 Count = FMath::Min<int32>(Pkt.m_count, MAX_DEPOSIT_PIECES);
+    for (int32 i = 0; i < Count; ++i)
+    {
+        const deposit_piece_net& P = Pkt.m_pieces[i];
+        const FVector Z(P.m_zx, P.m_zy, P.m_zz);
+        const FVector X(P.m_xx, P.m_xy, P.m_xz);
+        const FQuat   Rot = FRotationMatrix::MakeFromZX(Z, X).ToQuat();   // 서버와 같은 축 구성 (Y = Z × X)
+        const FVector Scale = FVector(P.m_sx, P.m_sy, P.m_sz) * DEPOSIT_PIECE_BASE_SCALE;
+        const FTransform T(Rot, FVector(P.m_x, P.m_y, P.m_z), Scale);
+
+        View.Pieces.Add(T);
+
+        const bool bAlive = ((Pkt.m_alive_mask >> i) & 1) != 0;
+        if (bAlive) ++View.Alive;
+        // 인스턴스 번호 = 조각 번호로 유지하기 위해, 없는 조각도 크기 0으로 넣어 둔다
+        ISM->AddInstance(bAlive ? T : FTransform(Rot, T.GetLocation(), FVector::ZeroVector), true);
+    }
+
+    Deposits.Add(Pkt.m_id, MoveTemp(View));
+}
+
+void UNetSyncComponent::HandlePieceAbsorb(const sc_packet_piece_absorb& Pkt)
+{
+    FDepositView* View = Deposits.Find(Pkt.m_deposit_id);
+    if (!View || !View->Pieces.IsValidIndex(Pkt.m_piece)) return;
+
+    const FTransform PieceT = View->Pieces[Pkt.m_piece];
+    UInstancedStaticMeshComponent* ISM = View->ISM.Get();
+    UMaterialInterface* Mat = ISM ? ISM->GetMaterial(0) : nullptr;
+
+    // 조각 숨기기 (크기 0)
+    if (ISM)
+        ISM->UpdateInstanceTransform(Pkt.m_piece,
+            FTransform(PieceT.GetRotation(), PieceT.GetLocation(), FVector::ZeroVector), true, true);
+
+    // 파편 연출: 바깥으로 튀어나왔다가 흡입구로 빨려 듦
+    FName SuctionSocket;
+    USceneComponent* Target = FindSuctionPoint(FindPlayerActor(Pkt.m_player_id), SuctionSocket);
+    if (FragmentMesh && Target)
+    {
+        const FVector S = PieceT.GetScale3D() / DEPOSIT_PIECE_BASE_SCALE;
+        const int32 Num = FMath::Clamp(FMath::RoundToInt(6.f * FMath::Pow(S.X * S.Y * S.Z, 0.6f)), 4, 12);
+        const FVector PieceCenter = PieceT.TransformPosition(FVector(0.f, 0.f, 44.5f));   // 피벗이 바닥 중앙 기준
+
+        FActorSpawnParameters Params;
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+        for (int32 k = 0; k < Num; ++k)
+        {
+            const FVector Local(FMath::FRandRange(-45.f, 45.f), FMath::FRandRange(-45.f, 45.f), FMath::FRandRange(5.f, 80.f));
+            const FVector Start = PieceT.TransformPosition(Local);
+
+            AStaticMeshActor* A = GetWorld()->SpawnActor<AStaticMeshActor>(Start, FRotator(FMath::FRand() * 360.f, FMath::FRand() * 360.f, 0.f), Params);
+            if (!A) continue;
+
+            UStaticMeshComponent* M = A->GetStaticMeshComponent();
+            M->SetMobility(EComponentMobility::Movable);
+            M->SetStaticMesh(FragmentMesh);
+            M->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            if (Mat) M->SetMaterial(0, Mat);
+            A->SetActorScale3D(FVector(FragmentScale));
+
+            FVector Out = (Start - PieceCenter).GetSafeNormal();
+            if (Out.IsNearlyZero()) Out = PieceT.GetRotation().GetUpVector();
+
+            FFragment F;
+            F.Actor = A;
+            F.Target = Target;
+            F.Socket = SuctionSocket;
+            F.Start = Start;
+            F.Burst = Start + Out * FragmentBurstDistance * FMath::FRandRange(0.5f, 1.f);
+            F.Spin = FRotator(FMath::FRandRange(-720.f, 720.f), FMath::FRandRange(-720.f, 720.f), 0.f);
+            F.Delay = k * 0.03f;
+            Fragments.Add(F);
+        }
+    }
+
+    // 송이를 다 빨아들였으면 정리
+    if (--View->Alive <= 0)
+    {
+        if (ISM && ISM->GetOwner()) ISM->GetOwner()->Destroy();
+        Deposits.Remove(Pkt.m_deposit_id);
+    }
+}
+
+void UNetSyncComponent::UpdateFragments(float DeltaTime)
+{
+    for (int32 i = Fragments.Num() - 1; i >= 0; --i)
+    {
+        FFragment& F = Fragments[i];
+        AActor* A = F.Actor.Get();
+        USceneComponent* T = F.Target.Get();
+        if (!A || !T)
+        {
+            if (A) A->Destroy();
+            Fragments.RemoveAtSwap(i);
+            continue;
+        }
+
+        F.Elapsed += DeltaTime;
+        const float Local = F.Elapsed - F.Delay;
+        if (Local < 0.f) continue;                               // 출발 대기
+
+        FVector Pos;
+        float   ScaleMul = 1.f;
+        bool    bDone = false;
+
+        if (Local < FragmentBurstTime)
+        {
+            // ① 튀어나옴 (감속)
+            const float a = Local / FragmentBurstTime;
+            const float e = 1.f - (1.f - a) * (1.f - a);
+            Pos = FMath::Lerp(F.Start, F.Burst, e);
+        }
+        else
+        {
+            // ② 곡선을 따라 흡입구로 가속
+            const float u = FMath::Clamp((Local - FragmentBurstTime) / FragmentFlyTime, 0.f, 1.f);
+            const float e = u * u;
+            const FVector Goal = T->GetSocketLocation(F.Socket);  // 소켓이 없으면 컴포넌트 위치
+            const FVector Ctrl = F.Burst + (F.Burst - F.Start).GetSafeNormal() * FragmentBurstDistance;
+
+            Pos = FMath::Square(1.f - e) * F.Burst + 2.f * (1.f - e) * e * Ctrl + FMath::Square(e) * Goal;
+            ScaleMul = 1.f - 0.8f * e;
+            bDone = (u >= 1.f);
+        }
+
+        A->SetActorLocation(Pos);
+        A->AddActorWorldRotation(F.Spin * DeltaTime);
+        A->SetActorScale3D(FVector(FragmentScale * ScaleMul));
+
+        if (bDone)
+        {
+            A->Destroy();
+            Fragments.RemoveAtSwap(i);
+        }
+    }
+}
+
+void UNetSyncComponent::HandleGauge(const sc_packet_gauge& Pkt)
+{
+    if (!Gauges.IsValidIndex(Pkt.m_item)) return;
+    Gauges[Pkt.m_item] = Pkt.m_value;
+    OnGaugeChanged.Broadcast(Pkt.m_item, (float)Pkt.m_value / GAUGE_MAX);
+}
+
+float UNetSyncComponent::GetGaugeRatio(int32 ItemId) const
+{
+    return Gauges.IsValidIndex(ItemId) ? (float)Gauges[ItemId] / GAUGE_MAX : 0.f;
+}
+
 void UNetSyncComponent::SendPositionTick()
 {
     if (AActor* Owner = GetOwner())
@@ -336,7 +553,6 @@ void UNetSyncComponent::ReceiveFromServer()
         }
 
         RecvBuffer.Append(Temp, BytesRead);
-        UE_LOG(LogTemp, Warning, TEXT("RECV %d bytes"), BytesRead);
     }
 
     // 2. RecvBuffer에 쌓인 걸 패킷 단위로 잘라서 처리
@@ -348,8 +564,6 @@ void UNetSyncComponent::ReceiveFromServer()
         {
             break;
         }
-
-        UE_LOG(LogTemp, Warning, TEXT("PKT type=%d size=%d"), Header->m_type, Header->m_size);
 
         switch (Header->m_type)
         {
@@ -459,7 +673,17 @@ void UNetSyncComponent::ReceiveFromServer()
             HandleTerrainEdit(Pkt);
             break;
         }
-
+        case PKT_S2C_DEPOSIT_ADD:
+        {
+            HandleDepositAdd(*reinterpret_cast<const sc_packet_deposit_add*>(RecvBuffer.GetData()));
+            break;
+        }
+        case PKT_S2C_PIECE_ABSORB:
+            HandlePieceAbsorb(*reinterpret_cast<const sc_packet_piece_absorb*>(RecvBuffer.GetData()));
+            break;
+        case PKT_S2C_GAUGE:
+            HandleGauge(*reinterpret_cast<const sc_packet_gauge*>(RecvBuffer.GetData()));
+            break;
         default:
             break;
         }
@@ -473,6 +697,7 @@ void UNetSyncComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+    UpdateFragments(DeltaTime);
     ReceiveFromServer();
     InterpolateRemotePlayers(DeltaTime);
     InterpolateMonsters(DeltaTime);

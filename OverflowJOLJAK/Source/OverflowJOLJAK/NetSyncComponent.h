@@ -14,6 +14,7 @@ class AProjectile;
 // AEnemyCharacter나 플레이어 쪽에서 바인딩해서 공격 애니메이션/이펙트/피격 반응 등을 처리하면 된다.
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMonsterAttack, int32, MonsterId, int32, TargetPlayerId);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnItemChanged, int32, ItemId, int32, Delta, int32, Total);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGaugeChanged, int32, ItemId, float, Ratio);
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OVERFLOWJOLJAK_API UNetSyncComponent : public UActorComponent
@@ -85,6 +86,34 @@ public:
     UFUNCTION(BlueprintPure, Category = "Inventory")
     float GetSoilRatio() const;
 
+
+    UPROPERTY(EditAnywhere, Category = "Deposit")
+    TObjectPtr<UStaticMesh> FragmentMesh;          // 파편 메시 (엔진 기본 Cube 등)
+
+    UPROPERTY(EditAnywhere, Category = "Deposit")
+    float FragmentScale = 0.1f;                    // 파편 크기 (Cube 100cm 기준 → 10cm)
+
+    UPROPERTY(EditAnywhere, Category = "Deposit")
+    float FragmentFlyTime = 0.4f;                  // 빨려 오는 시간
+
+    UPROPERTY(EditAnywhere, Category = "Deposit")
+    FName MuzzleSocketName = TEXT("Muzzle");     // 무기 메시의 발사 소켓 이름과 같게
+
+    UPROPERTY(EditAnywhere, Category = "Deposit")
+    float FragmentBurstTime = 0.12f;            // 튀어나오는 시간
+
+    UPROPERTY(EditAnywhere, Category = "Deposit")
+    float FragmentBurstDistance = 50.f;         // 튀어나오는 거리 (cm)
+
+    UPROPERTY(EditAnywhere, Category = "Deposit")
+    FName SuctionTag = TEXT("Suction");         // 흡입구 컴포넌트 태그
+
+    UPROPERTY(BlueprintAssignable, Category = "Inventory")
+    FOnGaugeChanged OnGaugeChanged;
+
+    UFUNCTION(BlueprintPure, Category = "Inventory")
+    float GetGaugeRatio(int32 ItemId) const;
+
 private:
     TArray<int32> Inventory;
     void HandleItemChange(const struct sc_packet_item_change& Pkt);
@@ -110,6 +139,38 @@ private:
     FVector LastEditCenter = FVector(FLT_MAX);
     uint8   LastEditOp = 255;
     static constexpr double EditInterval = 0.1;   // 초당 최대 10번
+
+
+    struct FDepositView
+    {
+        TWeakObjectPtr<class UInstancedStaticMeshComponent> ISM;
+        TArray<FTransform> Pieces;     // 조각별 월드 트랜스폼
+        int32 Alive = 0;
+    };
+    TMap<int32, FDepositView> Deposits;
+
+    struct FFragment
+    {
+        TWeakObjectPtr<AActor>          Actor;
+        TWeakObjectPtr<USceneComponent> Target;
+        FName    Socket = NAME_None;
+        FVector  Start = FVector::ZeroVector;
+        FVector  Burst = FVector::ZeroVector;
+        FRotator Spin = FRotator::ZeroRotator;
+        float    Elapsed = 0.f;
+        float    Delay = 0.f;
+    };
+    TArray<FFragment> Fragments;
+
+    USceneComponent* FindSuctionPoint(AActor* Actor, FName& OutSocket) const;
+
+    TArray<int32> Gauges;
+
+    void HandleDepositAdd(const struct sc_packet_deposit_add& Pkt);
+    void HandlePieceAbsorb(const struct sc_packet_piece_absorb& Pkt);
+    void HandleGauge(const struct sc_packet_gauge& Pkt);
+    void UpdateFragments(float DeltaTime);
+    AActor* FindPlayerActor(int32 Id) const;
 
 
 protected:
