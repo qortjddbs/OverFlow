@@ -479,6 +479,122 @@ static void change_item(SESSION* s, unsigned char item, int delta)
     fflush(stdout);
 }
 
+// 조각 몸통의 중심 (기준점은 바닥 중앙이라, 그 조각의 위쪽 방향으로 반높이만큼 올림)
+static V3 piece_center(const DEPOSIT_PIECE& p)
+{
+    return p.P + p.Z * (RESIN_PIVOT_TO_CENTER_Z * DEPOSIT_PIECE_BASE_SCALE * p.sz);
+}
+
+// 이 조각을 먹으면 오르는 게이지 (큰 조각일수록 많이, 부피^0.6 으로 완만하게)
+static float piece_gauge(const DEPOSIT_PIECE& p)
+{
+    return PIECE_GAUGE_BASE * std::pow(p.sx * p.sy * p.sz, PIECE_GAUGE_EXP);
+}
+
+// 조각 상자 안쪽 14곳(면 중심 6 + 꼭짓점 8)이 전부 공기면 "다 드러남"
+static bool is_piece_exposed(const DEPOSIT_PIECE& p)
+{
+    const V3 Y = cross(p.Z, p.X);
+    const V3 C = piece_center(p);
+    const float k = DEPOSIT_PIECE_BASE_SCALE * PIECE_EXPOSE_INSET;
+    const float hx = RESIN_HALF_X * k * p.sx;       // 검사 상자의 반폭 (실제 크기의 70%)
+    const float hy = RESIN_HALF_Y * k * p.sy;
+    const float hz = RESIN_HALF_Z * k * p.sz;
+
+    static const float pts[14][3] = {
+        { 1, 0, 0 },{ -1, 0, 0 },{ 0, 1, 0 },{ 0, -1, 0 },{ 0, 0, 1 },{ 0, 0, -1 },       // 면 중심 6곳
+        { 1, 1, 1 },{ 1, 1, -1 },{ 1, -1, 1 },{ 1, -1, -1 },                         // 꼭짓점 8곳
+        { -1, 1, 1 },{ -1, 1, -1 },{ -1, -1, 1 },{ -1, -1, -1 } };
+
+    for (const auto& t : pts)
+    {
+        const V3 s = C + p.X * (t[0] * hx) + Y * (t[1] * hy) + p.Z * (t[2] * hz);
+        if (ground_value(s.x, s.y, s.z) < 0.f) return false;   // 하나라도 땅속이면 아직 묻혀 있음
+    }
+    return true;
+}
+
+// 파는 구(cx, cy, cz, radius) 안에 있고 다 드러난 조각을 전부 빨아들인다.
+// 모두에게 흡수를 알리고, 판 사람의 게이지를 올려서 넘치면 자원을 지급한다.
+// g_deposit_lock, g_player_lock을 안에서 차례로 잡으므로, 두 잠금을 잡지 않은 상태에서 부를 것
+static void absorb_pieces(SESSION* editor, float cx, float cy, float cz, float radius)
+{
+    struct Absorb { int dep; int piece; unsigned char item; float gauge; };   // 이번에 먹은 조각 기록
+    std::vector<Absorb> got;
+    const V3 dig{ cx, cy, cz };
+
+    // 자원 잠금 안에서: 먹을 조각 찾기, 먹힘 표시, 빈 송이 삭제
+    {
+        std::lock_guard<std::mutex> lock(g_deposit_lock);
+        for (auto it = g_deposits.begin(); it != g_deposits.end(); )
+        {
+            DEPOSIT& d = *it;
+            const float reach = radius + DEPOSIT_CLUSTER_RADIUS + 100.f;
+            const V3 dc = d.m_center - dig;
+            if (dot(dc, dc) > reach * reach) { ++it; continue; }   // 송이 단위로 먼저 거르기 (멀면 조각은 안 봄)
+
+            int alive = 0;
+            for (int i = 0; i < static_cast<int>(d.m_pieces.size()); ++i)
+            {
+                DEPOSIT_PIECE& p = d.m_pieces[i];
+                if (!p.alive) continue;
+
+                const V3 off = piece_center(p) - dig;
+                if (dot(off, off) <= radius * radius && is_piece_exposed(p))
+                {
+                    p.alive = false;
+                    got.push_back({ d.m_id, i, d.m_item, piece_gauge(p) });
+                }
+                else ++alive;
+            }
+
+            if (alive == 0) it = g_deposits.erase(it);   // 다 먹은 송이는 삭제
+            else ++it;
+        }
+    }
+
+    if (got.empty()) return;
+
+    // 플레이어 잠금 안에서: 흡수 알림, 게이지, 자원 지급
+    std::lock_guard<std::mutex> lock(g_player_lock);
+    bool touched[ITEM_COUNT] = {};      // 이번에 게이지가 바뀐 아이템
+
+    for (const Absorb& a : got)
+    {
+        sc_packet_piece_absorb pa{};
+        pa.m_size = sizeof(pa);
+        pa.m_type = PKT_S2C_PIECE_ABSORB;
+        pa.m_deposit_id = a.dep;
+        pa.m_piece = static_cast<unsigned char>(a.piece);
+        pa.m_player_id = editor->m_id;
+        for (auto& [id, session] : g_players) send_packet(&session, &pa, sizeof(pa));   // 본인 포함 전원
+
+        editor->m_gauge[a.item] += a.gauge;
+        touched[a.item] = true;
+
+        printf("[deposit] client %d 송이 %d 조각 %d 흡수 (item=%d, +%.1f)\n",
+            editor->m_id, a.dep, a.piece, a.item, a.gauge);
+    }
+
+    // 게이지가 넘친 만큼 자원 지급 (한 번에 여러 개도 가능, 남은 양은 이월)
+    for (int item = 0; item < ITEM_COUNT; ++item)
+    {
+        if (!touched[item]) continue;
+
+        int whole = 0;
+        while (editor->m_gauge[item] >= GAUGE_MAX) { editor->m_gauge[item] -= GAUGE_MAX; ++whole; }
+        if (whole > 0) change_item(editor, static_cast<unsigned char>(item), +whole);
+
+        sc_packet_gauge g{};
+        g.m_size = sizeof(g);
+        g.m_type = PKT_S2C_GAUGE;
+        g.m_item = static_cast<unsigned char>(item);
+        g.m_value = static_cast<int>(editor->m_gauge[item]);
+        send_packet(editor, &g, sizeof(g));     // 게이지는 본인에게만
+    }
+    fflush(stdout);
+}
+
 void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
 {
     // 파기/쌓기 속도 제한: 클라를 고쳐서 초당 수십 번 보내도 흙을 더 못 가져가게
@@ -528,6 +644,9 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
     printf("[terrain] %s changed=%d seq=%u touched=%d m3=%.3f\n",
         pkt->m_op == 0 ? "DIG" : "BUILD", bChanged, R.Seq, R.NumTouched, R.ChangedSum / (2.0 * VoxelEdit::QMAX));
     fflush(stdout);
+
+    if (pkt->m_op == 0)     // 파기일 때만: 방금 판 결과로 드러난 조각 흡수
+        absorb_pieces(editor, pkt->m_x, pkt->m_y, pkt->m_z, pkt->m_radius);
 
     if (!bChanged) return;   // 허공을 팠다든지 해서 바뀐 게 없으면 보낼 것도 없음
 
