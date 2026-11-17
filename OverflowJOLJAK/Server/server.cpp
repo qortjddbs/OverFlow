@@ -580,7 +580,7 @@ static void absorb_pieces(SESSION* editor, float cx, float cy, float cz, float r
         editor->m_gauge[a.item] += a.gauge;
         touched[a.item] = true;
 
-        printf("[deposit] client %d 송이 %d 조각 %d 흡수 (item=%d, +%.1f)\n",
+        printf("[deposit] client %d 자원 무리 %d 자원 %d 흡수 (item=%d, +%.1f)\n",
             editor->m_id, a.dep, a.piece, a.item, a.gauge);
     }
 
@@ -1456,7 +1456,7 @@ void spawn_initial_resources()
         else if (dep.m_item == ITEM_COMPOUND) ++compound;
         pieces += static_cast<int>(dep.m_pieces.size());
     }
-    printf("[resource] 송이 %zu개 (레진 %d, 화합물 %d), 조각 %d개, 실패 %d\n",
+    printf("[resource] 자원 무리 %zu개 (레진 %d, 화합물 %d), 자원 %d개, 실패 %d\n",
         g_deposits.size(), resin, compound, pieces, fail_count);
     fflush(stdout);
 }
