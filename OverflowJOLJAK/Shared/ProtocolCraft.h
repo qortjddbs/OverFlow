@@ -23,6 +23,7 @@ enum CRAFT_RESULT : unsigned char
     CRAFT_TOO_FAR,             // 시설에서 너무 멂
     CRAFT_NO_MATERIAL,         // 재료 부족
     CRAFT_NO_SPACE,            // 놓을 땅을 못 찾음
+    CRAFT_NOT_ACTIVE,          // 시설이 잡혀 있어서 사용할 수 없음
 };
 
 // ---------------------------------------------------------------- 규칙 상수
@@ -128,7 +129,10 @@ struct cs_packet_object_grab : PACKET_HEADER
 };
 
 // 끄는 중 위치(OBJECT_DRAG_INTERVAL마다) / 놓기(m_release = 1)
-// 서버: 끄는 중이면 그대로 전달, 놓기면 땅에 맞춰 확정 후 방송 + holder 해제
+// 위치는 원하는 지점, 방향은 앞쪽 벡터
+// 서버: 플레이어에서 OBJECT_MOVE_RANGE_CM(15m)을 넘으면 15m 지점으로 당긴다
+//       끄는 중이면 다른 사람에게 전달, 놓기면 땅에 맞춰 확정 후 object_move → object_hold 순서로 방송
+// 클라: 같은 15m 제한을 직접 적용한다 (끄는 본인에게는 서버가 당긴 위치가 오지 않으므로)
 struct cs_packet_object_drag : PACKET_HEADER
 {
     int           m_id;
