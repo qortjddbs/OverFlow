@@ -41,7 +41,7 @@ struct deposit_piece_net
 };
 
 // 서버 -> 클라: 송이 생성 (접속 시 목록 전송에도 사용)
-struct sc_packet_deposit_add : PACKET_HEADER
+struct sc_packet_deposit_add : PACKET_HEADER        // 3 + 4 + 1 + 1 + 2 + 48 x 16 = 779 바이트 (현재)
 {
     int                m_id;
     unsigned char      m_item;         // ITEM_TYPE

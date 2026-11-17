@@ -49,23 +49,23 @@ constexpr float PLAYER_INVULN_TIME = 1.f;
 constexpr int DIG_MIN_INTERVAL_MS = 90;                     // 서버가 받아주는 파기/쌓기 최소 간격 (클라 VoxelCooldown 0.1초보다 살짝 여유)
 constexpr double SOIL_UNITS_PER_M3 = 1000.0 / 600.0;        // 통 하나(1000) = 600 m^3 (대략 꾹 누르고 1분)
 
-// 자원 배치 (송이를 행성 곳곳에 흩뿌림)
-constexpr int   RESOURCE_DEPOSIT_COUNT = 80;                // 행성 전체 송이 수
-constexpr int   RESOURCE_DEMO_DEPOSIT_COUNT = 6;            // 플레이어 시작 위치 근처 송이 수 (시연용)
-constexpr float RESOURCE_DEMO_SPREAD_CM = 1500.f;           // 송이가 흩어지는 범위 (시작 위치에서 약 15m - 시연용)
+// 자원 배치 (자원 무리를 행성 곳곳에 흩뿌림)
+constexpr int   RESOURCE_DEPOSIT_COUNT = 80;                // 행성 전체 자원 무리 수
+constexpr int   RESOURCE_DEMO_DEPOSIT_COUNT = 6;            // 플레이어 시작 위치 근처 자원 무리 수 (시연용)
+constexpr float RESOURCE_DEMO_SPREAD_CM = 1500.f;           // 자원 무리가 흩어지는 범위 (시작 위치에서 약 15m - 시연용)
 constexpr unsigned int RESOURCE_SEED = 20261118;            // 자원 배치용 고정 시드. 바꾸면 행성 전체 배치가 바뀜
 
-// 송이/조각
-constexpr float DEPOSIT_CLUSTER_RADIUS = 150.f;                     // 송이 중심에서 조각이 흩어지는 반경 (cm)
-constexpr int   DEPOSIT_PIECES_MIN = 10;                            // 송이 하나의 최소 조각 수
-constexpr int   DEPOSIT_PIECES_MAX = MAX_DEPOSIT_PIECES;            // 송이 하나의 최대 조각 수 (unsigned short -> 16개)
-constexpr float PIECE_SCALE_MIN = 0.6f;                             // 조각 크기 최소 배율 (축마다 따로 뽑음)
-constexpr float PIECE_SCALE_MAX = 1.6f;                             // 조각 크기 최대 배율
-constexpr float PIECE_TILT_MAX = 0.45f;                             // 조각 기울기 최대 (약 25도)
-constexpr float PIECE_SINK_MAX = 0.6f;                              // 조각 높이의 최대 60%까지 땅에 묻힘
-constexpr float PIECE_GAUGE_BASE = 25.f;                            // 기본 크기(1,1,1) 조각 하나를 먹으면 오르는 게이지
-constexpr float PIECE_GAUGE_EXP = 0.6f;                             // 부피^0.6 -> 모든 축 2배인 조각은 약 3.5배
-constexpr float PIECE_EXPOSE_INSET = 0.7f;                          // 드러남 검사점 위치: 조각 상자 겉면의 70% 안쪽
+// 자원 무리 / 자원
+constexpr float DEPOSIT_CLUSTER_RADIUS = 150.f;                     // 자원 무리 중심에서 자원이 흩어지는 반경 (cm)
+constexpr int   DEPOSIT_PIECES_MIN = 10;                            // 자원 무리 하나의 최소 자원 수
+constexpr int   DEPOSIT_PIECES_MAX = MAX_DEPOSIT_PIECES;            // 자원 무리 하나의 최대 자원 수 (unsigned short -> 16개)
+constexpr float PIECE_SCALE_MIN = 0.6f;                             // 자원 크기 최소 배율 (축마다 따로 뽑음)
+constexpr float PIECE_SCALE_MAX = 1.6f;                             // 자원 크기 최대 배율
+constexpr float PIECE_TILT_MAX = 0.45f;                             // 자원 기울기 최대 (약 25도)
+constexpr float PIECE_SINK_MAX = 0.6f;                              // 자원 높이의 최대 60%까지 땅에 묻힘
+constexpr float PIECE_GAUGE_BASE = 25.f;                            // 기본 크기(1,1,1) 자원 하나를 먹으면 오르는 게이지
+constexpr float PIECE_GAUGE_EXP = 0.6f;                             // 부피^0.6 -> 모든 축 2배인 자원은 약 3.5배
+constexpr float PIECE_EXPOSE_INSET = 0.7f;                          // 드러남 검사점 위치: 자원 상자 겉면의 70% 안쪽
 
 // 레진 메시 크기 (배율 1 기준, cm)
 constexpr float RESIN_HALF_X = 53.f;
@@ -181,7 +181,7 @@ struct SESSION
     std::array<int, ITEM_COUNT> m_inventory{};                      // [아이템 번호] = 개수
     std::chrono::steady_clock::time_point m_last_dig_time{};        // 마지막으로 받아준 파기/쌓기 시각
     std::array<double, ITEM_COUNT> m_item_frac{};                   // 흙 자투리 (1 단위가 안 돼서 남은 흙. 다음 파기에 이어서 쌓임)
-    std::array<float, ITEM_COUNT> m_gauge{};                        // 자원별 게이지 (GAUGE_MAX 넘으면 1개 지급, 남은 건 이월)
+    std::array<float, ITEM_COUNT> m_gauge{};                        // 아이템별 게이지 (GAUGE_MAX 넘으면 1개 지급, 남은 건 이월)
 
 	// ==============================================================
     FClientTerrainState m_terrain;   // 이 클라가 가진 청크 버전
@@ -253,28 +253,28 @@ static float    dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }   
 static V3       cross(V3 a, V3 b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }   // 외적 (두 방향에 모두 수직인 방향)
 static V3       normalize(V3 a) { const float l = std::sqrt(dot(a, a)); return l > 0.f ? a * (1.f / l) : a; }           // 길이 1로
 
-static float ground_value(float x, float y, float z);   // 정의는 아래 (몬스터 중력 쪽). 조각 드러남 검사에서 먼저 써서 미리 선언
+static float ground_value(float x, float y, float z);   // 정의는 아래 (몬스터 중력 쪽). 자원 드러남 검사에서 먼저 써서 미리 선언
 
-// 조각 하나 (레진 메시 하나)
+// 자원 하나 (레진 메시 하나)
 struct DEPOSIT_PIECE
 {
     V3    P{};                              // 기준점 = 메시 바닥 중앙 (cm)
-    V3    X{}, Z{};                         // 조각의 로컬 X축, Z축 방향 (길이 1). Y축은 Z × X로 계산
+    V3    X{}, Z{};                         // 자원의 로컬 X축, Z축 방향 (길이 1). Y축은 Z × X로 계산
     float sx = 1.f, sy = 1.f, sz = 1.f;     // 축별 크기 배율
     bool  alive = true;                     // 아직 안 먹혔으면 true
 };
 
-// 송이 하나 (조각 10~16개가 모인 한 자리)
+// 자원 무리 하나 (자원 10~16개가 모인 한 자리)
 struct DEPOSIT
 {
-    int           m_id = 0;                 // 송이 번호 (클라와 주고받을 때 씀. 1부터)
-    unsigned char m_item = ITEM_RESIN;      // 어떤 자원인지 (ITEM_TYPE)
-    V3            m_center{};               // 송이 중심 (땅 표면, cm)
-    std::vector<DEPOSIT_PIECE> m_pieces;    // 이 송이의 조각들
+    int           m_id = 0;                 // 자원 무리 번호 (클라와 주고받을 때 씀. 1부터)
+    unsigned char m_item = ITEM_RESIN;      // 어떤 종류인지 (ITEM_TYPE)
+    V3            m_center{};               // 자원 무리 중심 (땅 표면, cm)
+    std::vector<DEPOSIT_PIECE> m_pieces;    // 이 자원 무리의 자원들
 };
 
 std::mutex g_deposit_lock;          // g_deposits 전체를 보호
-std::vector<DEPOSIT> g_deposits;    // 행성의 모든 송이. 다 먹은 송이는 목록에서 삭제 (번호는 칸 위치가 아니라 m_id)
+std::vector<DEPOSIT> g_deposits;    // 행성의 모든 자원 무리. 다 먹은 자원 무리는 목록에서 삭제 (번호는 칸 위치가 아니라 m_id)
 
 // 자원 배치 전용 무작위 생성기
 // 기존 rand()는 srand(time)으로 매번 바뀌고 몬스터와도 섞이므로 따로 둔다
@@ -479,19 +479,19 @@ static void change_item(SESSION* s, unsigned char item, int delta)
     fflush(stdout);
 }
 
-// 조각 몸통의 중심 (기준점은 바닥 중앙이라, 그 조각의 위쪽 방향으로 반높이만큼 올림)
+// 자원 몸통의 중심 (기준점은 바닥 중앙이라, 그 자원의 위쪽 방향으로 반높이만큼 올림)
 static V3 piece_center(const DEPOSIT_PIECE& p)
 {
     return p.P + p.Z * (RESIN_PIVOT_TO_CENTER_Z * DEPOSIT_PIECE_BASE_SCALE * p.sz);
 }
 
-// 이 조각을 먹으면 오르는 게이지 (큰 조각일수록 많이, 부피^0.6 으로 완만하게)
+// 이 자원을 먹으면 오르는 게이지 (큰 자원일수록 많이, 부피^0.6 으로 완만하게)
 static float piece_gauge(const DEPOSIT_PIECE& p)
 {
     return PIECE_GAUGE_BASE * std::pow(p.sx * p.sy * p.sz, PIECE_GAUGE_EXP);
 }
 
-// 조각 상자 안쪽 14곳(면 중심 6 + 꼭짓점 8)이 전부 공기면 "다 드러남"
+// 자원 상자 안쪽 14곳(면 중심 6 + 꼭짓점 8)이 전부 공기면 "다 드러남"
 static bool is_piece_exposed(const DEPOSIT_PIECE& p)
 {
     const V3 Y = cross(p.Z, p.X);
@@ -514,16 +514,16 @@ static bool is_piece_exposed(const DEPOSIT_PIECE& p)
     return true;
 }
 
-// 파는 구(cx, cy, cz, radius) 안에 있고 다 드러난 조각을 전부 빨아들인다.
-// 모두에게 흡수를 알리고, 판 사람의 게이지를 올려서 넘치면 자원을 지급한다.
+// 파는 구(cx, cy, cz, radius) 안에 있고 다 드러난 자원을 전부 빨아들인다.
+// 모두에게 흡수를 알리고, 판 사람의 게이지를 올려서 넘치면 아이템을 지급한다.
 // g_deposit_lock, g_player_lock을 안에서 차례로 잡으므로, 두 잠금을 잡지 않은 상태에서 부를 것
 static void absorb_pieces(SESSION* editor, float cx, float cy, float cz, float radius)
 {
-    struct Absorb { int dep; int piece; unsigned char item; float gauge; };   // 이번에 먹은 조각 기록
+    struct Absorb { int dep; int piece; unsigned char item; float gauge; };   // 이번에 먹은 자원 기록
     std::vector<Absorb> got;
     const V3 dig{ cx, cy, cz };
 
-    // 자원 잠금 안에서: 먹을 조각 찾기, 먹힘 표시, 빈 송이 삭제
+    // 자원 무리 잠금 안에서: 먹을 자원 찾기, 먹힘 표시, 빈 자원 무리 삭제
     {
         std::lock_guard<std::mutex> lock(g_deposit_lock);
         for (auto it = g_deposits.begin(); it != g_deposits.end(); )
@@ -531,7 +531,7 @@ static void absorb_pieces(SESSION* editor, float cx, float cy, float cz, float r
             DEPOSIT& d = *it;
             const float reach = radius + DEPOSIT_CLUSTER_RADIUS + 100.f;
             const V3 dc = d.m_center - dig;
-            if (dot(dc, dc) > reach * reach) { ++it; continue; }   // 송이 단위로 먼저 거르기 (멀면 조각은 안 봄)
+            if (dot(dc, dc) > reach * reach) { ++it; continue; }   // 자원 무리 단위로 먼저 거르기 (멀면 그 안의 자원은 안 봄)
 
             int alive = 0;
             for (int i = 0; i < static_cast<int>(d.m_pieces.size()); ++i)
@@ -548,14 +548,14 @@ static void absorb_pieces(SESSION* editor, float cx, float cy, float cz, float r
                 else ++alive;
             }
 
-            if (alive == 0) it = g_deposits.erase(it);   // 다 먹은 송이는 삭제
+            if (alive == 0) it = g_deposits.erase(it);   // 다 먹은 자원 무리는 삭제
             else ++it;
         }
     }
 
     if (got.empty()) return;
 
-    // 플레이어 잠금 안에서: 흡수 알림, 게이지, 자원 지급
+    // 플레이어 잠금 안에서: 흡수 알림, 게이지, 아이템 지급
     std::lock_guard<std::mutex> lock(g_player_lock);
     bool touched[ITEM_COUNT] = {};      // 이번에 게이지가 바뀐 아이템
 
@@ -576,7 +576,7 @@ static void absorb_pieces(SESSION* editor, float cx, float cy, float cz, float r
             editor->m_id, a.dep, a.piece, a.item, a.gauge);
     }
 
-    // 게이지가 넘친 만큼 자원 지급 (한 번에 여러 개도 가능, 남은 양은 이월)
+    // 게이지가 넘친 만큼 아이템 지급 (한 번에 여러 개도 가능, 남은 양은 이월)
     for (int item = 0; item < ITEM_COUNT; ++item)
     {
         if (!touched[item]) continue;
@@ -645,7 +645,7 @@ void handle_terrain_edit(SESSION* editor, const cs_packet_terrain_edit* pkt)
         pkt->m_op == 0 ? "DIG" : "BUILD", bChanged, R.Seq, R.NumTouched, R.ChangedSum / (2.0 * VoxelEdit::QMAX));
     fflush(stdout);
 
-    if (pkt->m_op == 0)     // 파기일 때만: 방금 판 결과로 드러난 조각 흡수
+    if (pkt->m_op == 0)     // 파기일 때만: 방금 판 결과로 드러난 자원 흡수
         absorb_pieces(editor, pkt->m_x, pkt->m_y, pkt->m_z, pkt->m_radius);
 
     if (!bChanged) return;   // 허공을 팠다든지 해서 바뀐 게 없으면 보낼 것도 없음
@@ -1132,6 +1132,33 @@ void send_terrain_edit_list(SESSION* p)
     }
 }
 
+// 접속한 클라에게 모든 자원 무리 정보(자원 위치·모양·생존 여부)를 보낸다
+void send_deposit_list(SESSION* s)
+{
+    std::lock_guard<std::mutex> lock(g_deposit_lock);
+    for (const DEPOSIT& d : g_deposits)
+    {
+        sc_packet_deposit_add da{};
+        da.m_size = sizeof(da);
+        da.m_type = PKT_S2C_DEPOSIT_ADD;
+        da.m_id = d.m_id;
+        da.m_item = d.m_item;
+        da.m_count = static_cast<unsigned char>(d.m_pieces.size());
+
+        for (size_t i = 0; i < d.m_pieces.size(); ++i)
+        {
+            const DEPOSIT_PIECE& p = d.m_pieces[i];
+            deposit_piece_net& o = da.m_pieces[i];
+            o.m_x = p.P.x;  o.m_y = p.P.y;  o.m_z = p.P.z;      // 기준점 (바닥 중앙)
+            o.m_xx = p.X.x; o.m_xy = p.X.y; o.m_xz = p.X.z;     // 로컬 X축
+            o.m_zx = p.Z.x; o.m_zy = p.Z.y; o.m_zz = p.Z.z;     // 로컬 Z축 (위)
+            o.m_sx = p.sx;  o.m_sy = p.sy;  o.m_sz = p.sz;      // 축별 배율
+            if (p.alive) da.m_alive_mask |= static_cast<unsigned short>(1u << i);        // i번 자원이 남아 있으면 i번 비트 켜기
+        }
+        send_packet(s, &da, sizeof(da));
+    }
+}
+
 // accept는 일단 블로킹으로
 void accept_loop()
 {
@@ -1145,11 +1172,9 @@ void accept_loop()
             continue;
         }
 
-		//=========================================================================================================
 		// TCP_NODELAY 옵션 켜기 (Nagle 알고리즘 끄기)
         BOOL no_delay = TRUE;
         setsockopt(c_socket, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&no_delay), sizeof(no_delay));
-		//=========================================================================================================
 
         char addr_str[INET_ADDRSTRLEN] = {};
         inet_ntop(AF_INET, &client_addr.sin_addr, addr_str, sizeof(addr_str));      // inet_ntop -> 소켓에 저장된 IP주소를 문자열로 바꿔주는 함수
@@ -1185,6 +1210,7 @@ void accept_loop()
 
         add_player_notification(p);
         send_monster_list(p);
+        send_deposit_list(p);
         send_terrain_edit_list(p);
     }
 }
@@ -1319,13 +1345,13 @@ static void tangent_basis(V3 up, V3& t1, V3& t2)
     t2 = cross(up, t1);
 }
 
-// 방향 dir의 땅 표면에 송이 하나(조각 10~16개)를 만들어 g_deposits에 추가한다. 땅을 못 찾으면 추가하지 않고 false
+// 방향 dir의 땅 표면에 자원 무리 하나(자원 10~16개)를 만들어 g_deposits에 추가한다. 땅을 못 찾으면 추가하지 않고 false
 // 반드시 g_deposit_lock을 잡은 상태에서 부를 것
 static bool build_deposit(V3 dir, unsigned char item)
 {
     const float planet_r = static_cast<float>(g_planet.Radius() * VoxelEdit::VOXEL_SIZE);   // 행성 반지름 (cm)
 
-    // 송이 중심 = 그 방향의 땅 표면
+    // 자원 무리 중심 = 그 방향의 땅 표면
     V3 c = dir * planet_r;
     if (!snap_to_ground(c.x, c.y, c.z)) return false;
 
@@ -1334,13 +1360,13 @@ static bool build_deposit(V3 dir, unsigned char item)
     dep.m_item = item;
     dep.m_center = c;
 
-    V3 c1, c2;                                              // 송이 중심에서 땅과 나란한 두 방향
+    V3 c1, c2;                                              // 자원 무리 중심에서 땅과 나란한 두 방향
     tangent_basis(normalize(c), c1, c2);
 
-    const int n = resource_rand_int(DEPOSIT_PIECES_MIN, DEPOSIT_PIECES_MAX);   // 이 송이의 조각 수
+    const int n = resource_rand_int(DEPOSIT_PIECES_MIN, DEPOSIT_PIECES_MAX);   // 이 자원 무리의 자원 수
     for (int i = 0; i < n; ++i)
     {
-        // 송이 안에서 조각 위치 (반경 DEPOSIT_CLUSTER_RADIUS 원 안에 고르게)
+        // 자원 무리 안에서 자원 위치 (반경 DEPOSIT_CLUSTER_RADIUS 원 안에 고르게)
         const float a2 = resource_rand_float(0.f, 2.f * std::numbers::pi_v<float>);
         const float r2 = std::sqrt(resource_rand_float(0.f, 1.f)) * DEPOSIT_CLUSTER_RADIUS;
         V3 p = c + (c1 * cosf(a2) + c2 * sinf(a2)) * r2;
@@ -1373,11 +1399,11 @@ static bool build_deposit(V3 dir, unsigned char item)
     return true;
 }
 
-// 서버 시작 시 행성에 자원 송이를 배치한다. 서버 시작 때 한 번만 부를 것
+// 서버 시작 시 행성에 자원 무리를 배치한다. 서버 시작 때 한 번만 부를 것
 void spawn_initial_resources()
 {
     std::lock_guard<std::mutex> lock(g_deposit_lock);
-    int fail_count = 0;                                     // 땅을 못 찾아서 못 놓은 송이 수
+    int fail_count = 0;                                     // 땅을 못 찾아서 못 놓은 자원 무리 수
 
     // 1) 시연용: 플레이어 시작 위치 근처, 레진/화합물 번갈아
     const V3 spawn_dir = normalize(V3{ PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z });
