@@ -162,7 +162,14 @@ enum PACKET_TYPE : unsigned char    // 네트워크를 통해 밖으로 나가�
     PKT_S2C_DEPOSIT_ADD = 26,
     PKT_S2C_PIECE_ABSORB = 27,
     PKT_S2C_GAUGE = 28,
+    PKT_S2C_OBJECT_ADD = 29,
+    PKT_S2C_OBJECT_MOVE = 30,
+    PKT_S2C_OBJECT_REMOVE = 31,
+    PKT_S2C_CRAFT_RESULT = 32,
+    PKT_C2S_CRAFT = 33,
+    PKT_C2S_OBJECT_MOVE = 34,
 };
 
 #include "ProtocolTerrain.h"
 #include "ProtocolItem.h"
+#include "ProtocolCraft.h"
