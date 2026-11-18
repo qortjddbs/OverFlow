@@ -75,7 +75,7 @@ struct obj_transform_net
 struct sc_packet_object_add : PACKET_HEADER
 {
     int               m_id;
-    unsigned char     m_type;      // OBJECT_TYPE
+    unsigned char      m_obj_type;      // OBJECT_TYPE
     int               m_holder;    // 잡고 있는 플레이어 id, 없으면 NO_HOLDER
     obj_transform_net m_t;
 };

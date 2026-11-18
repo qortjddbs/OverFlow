@@ -41,5 +41,8 @@
     <ClInclude Include="Terrain\VoxelField.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="..\Shared\ProtocolCraft.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
