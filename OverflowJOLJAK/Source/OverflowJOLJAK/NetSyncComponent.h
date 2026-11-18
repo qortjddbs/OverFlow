@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Inventory/ItemTypes.h"
+#include "Craft/CraftTypes.h"
 
 #include "NetSyncComponent.generated.h"
 
@@ -15,6 +16,7 @@ class AProjectile;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMonsterAttack, int32, MonsterId, int32, TargetPlayerId);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnItemChanged, int32, ItemId, int32, Delta, int32, Total);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGaugeChanged, int32, ItemId, float, Ratio);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnCraftResult, int32, RecipeId, int32, Result, int32, ObjectId);
 
 UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OVERFLOWJOLJAK_API UNetSyncComponent : public UActorComponent
@@ -113,6 +115,36 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Inventory")
     float GetGaugeRatio(int32 ItemId) const;
+
+
+    // ---------- 시설 / 제작 ----------
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Craft")
+    TObjectPtr<UDataTable> ObjectTable;                 // DT_Objects
+
+    UPROPERTY(BlueprintAssignable, Category = "Craft")
+    FOnCraftResult OnCraftResult;                       // 제작 결과 (Result 0 = 성공)
+
+    // 이 시설에서 만들 수 있는 레시피 목록
+    UFUNCTION(BlueprintCallable, Category = "Craft")
+    TArray<FRecipeInfo> GetRecipesForStation(int32 StationType) const;
+
+    // 재료를 다 가지고 있는지 (버튼 활성화용, 실제 판정은 서버)
+    UFUNCTION(BlueprintPure, Category = "Craft")
+    bool CanCraft(int32 RecipeId) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Craft")
+    void RequestCraft(int32 PrinterId, int32 RecipeId);
+
+    UFUNCTION(BlueprintCallable, Category = "Craft")
+    bool FindObjectRow(int32 ObjectType, FObjectRow& OutRow) const;
+
+    // 화면 중앙이 가리키는 시설 (사거리 밖이거나 없으면 None)
+    UFUNCTION(BlueprintCallable, Category = "Craft")
+    APlacedObject* TraceObject() const;
+
+    UFUNCTION(BlueprintPure, Category = "Craft")
+    FText GetCraftResultText(int32 Result) const;
+
 
 private:
     TArray<int32> Inventory;
@@ -225,4 +257,13 @@ private:
     void InterpolateRemotePlayers(float DeltaTime);
     void InterpolateMonsters(float DeltaTime);
 
+
+    UPROPERTY()
+    TMap<int32, APlacedObject*> PlacedObjects;
+
+    void HandleObjectAdd(const struct sc_packet_object_add& Pkt);
+    void HandleObjectMove(const struct sc_packet_object_move& Pkt);
+    void HandleObjectRemove(const struct sc_packet_object_remove& Pkt);
+    void HandleObjectHold(const struct sc_packet_object_hold& Pkt);
+    void HandleCraftResult(const struct sc_packet_craft_result& Pkt);
 };

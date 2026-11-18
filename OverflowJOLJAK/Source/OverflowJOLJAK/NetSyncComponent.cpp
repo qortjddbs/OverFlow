@@ -24,6 +24,7 @@
 #include "VoxelTools/VoxelToolHelpers.h"
 
 #include "Inventory/ItemTypes.h"
+#include "Craft/PlacedObject.h"
 #include "Components/CapsuleComponent.h"
 
 #include "Engine/StaticMeshActor.h"
@@ -679,11 +680,40 @@ void UNetSyncComponent::ReceiveFromServer()
             break;
         }
         case PKT_S2C_PIECE_ABSORB:
+        {
             HandlePieceAbsorb(*reinterpret_cast<const sc_packet_piece_absorb*>(RecvBuffer.GetData()));
             break;
+        }
         case PKT_S2C_GAUGE:
+        {
             HandleGauge(*reinterpret_cast<const sc_packet_gauge*>(RecvBuffer.GetData()));
             break;
+        }
+        case PKT_S2C_OBJECT_ADD:
+        {
+            HandleObjectAdd(*reinterpret_cast<const sc_packet_object_add*>(RecvBuffer.GetData()));
+            break;
+        }
+        case PKT_S2C_OBJECT_MOVE:
+        {
+            HandleObjectMove(*reinterpret_cast<const sc_packet_object_move*>(RecvBuffer.GetData()));
+            break;
+        }
+        case PKT_S2C_OBJECT_REMOVE:
+        {
+            HandleObjectRemove(*reinterpret_cast<const sc_packet_object_remove*>(RecvBuffer.GetData()));
+            break;
+        }
+        case PKT_S2C_OBJECT_HOLD:
+        {
+            HandleObjectHold(*reinterpret_cast<const sc_packet_object_hold*>(RecvBuffer.GetData()));
+            break;
+        }
+        case PKT_S2C_CRAFT_RESULT:
+        {
+            HandleCraftResult(*reinterpret_cast<const sc_packet_craft_result*>(RecvBuffer.GetData()));
+            break;
+        }
         default:
             break;
         }
@@ -1077,5 +1107,172 @@ void UNetSyncComponent::InterpolateMonsters(float DeltaTime)
         // 애니메이션용 속도
         if (ACharacter* Ch = Cast<ACharacter>(MonsterChar))
             Ch->GetCharacterMovement()->Velocity = (NewLoc - Current) / DeltaTime;
+    }
+}
+
+
+// ===================== 시설 / 제작 =====================
+
+// 서버의 위치 + X축 + Z축 → 언리얼 트랜스폼
+static FTransform MakeObjTransform(const obj_transform_net& T)
+{
+    const FVector X(T.m_xx, T.m_xy, T.m_xz);
+    const FVector Z(T.m_zx, T.m_zy, T.m_zz);
+    return FTransform(FRotationMatrix::MakeFromZX(Z, X).ToQuat(), FVector(T.m_x, T.m_y, T.m_z));
+}
+
+void UNetSyncComponent::HandleObjectAdd(const sc_packet_object_add& Pkt)
+{
+    if (PlacedObjects.Contains(Pkt.m_id)) return;
+
+    FObjectRow Row;
+    if (!FindObjectRow(Pkt.m_type, Row) || !Row.ActorClass)
+    {
+        UE_LOG(LogTemp, Error, TEXT("[Object] 종류 %d 의 ActorClass 없음 (DT_Objects 확인)"), Pkt.m_type);
+        return;
+    }
+
+    FActorSpawnParameters Params;
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    APlacedObject* Obj = GetWorld()->SpawnActor<APlacedObject>(Row.ActorClass, MakeObjTransform(Pkt.m_t), Params);
+    if (!Obj) return;
+
+    Obj->ObjectId = Pkt.m_id;
+    Obj->ObjectType = Pkt.m_type;
+    Obj->HolderId = Pkt.m_holder;
+    PlacedObjects.Add(Pkt.m_id, Obj);
+}
+
+void UNetSyncComponent::HandleObjectMove(const sc_packet_object_move& Pkt)
+{
+    if (Pkt.m_holder == MyId) return;      // 내가 끄는 중이면 내 화면이 기준
+
+    if (APlacedObject** Found = PlacedObjects.Find(Pkt.m_id))
+    {
+        if (IsValid(*Found))
+        {
+            (*Found)->HolderId = Pkt.m_holder;
+            (*Found)->SetActorTransform(MakeObjTransform(Pkt.m_t));
+        }
+    }
+}
+
+void UNetSyncComponent::HandleObjectRemove(const sc_packet_object_remove& Pkt)
+{
+    if (APlacedObject** Found = PlacedObjects.Find(Pkt.m_id))
+    {
+        if (IsValid(*Found)) (*Found)->Destroy();
+        PlacedObjects.Remove(Pkt.m_id);
+    }
+}
+
+void UNetSyncComponent::HandleObjectHold(const sc_packet_object_hold& Pkt)
+{
+    if (APlacedObject** Found = PlacedObjects.Find(Pkt.m_id))
+        if (IsValid(*Found))
+            (*Found)->HolderId = Pkt.m_holder;
+}
+
+void UNetSyncComponent::HandleCraftResult(const sc_packet_craft_result& Pkt)
+{
+    OnCraftResult.Broadcast(Pkt.m_recipe, Pkt.m_result, Pkt.m_object_id);
+}
+
+TArray<FRecipeInfo> UNetSyncComponent::GetRecipesForStation(int32 StationType) const
+{
+    TArray<FRecipeInfo> Out;
+    for (int32 i = 0; i < RECIPE_COUNT; ++i)
+    {
+        const Recipe& R = RECIPES[i];
+        if (R.station != StationType) continue;
+
+        FRecipeInfo Info;
+        Info.RecipeId = R.id;
+        Info.StationType = R.station;
+        Info.OutputType = R.output;
+        for (int32 k = 0; k < R.num_inputs; ++k)
+        {
+            FRecipeInputInfo In;
+            In.ItemId = R.inputs[k].item;
+            In.Count = R.inputs[k].count;
+            Info.Inputs.Add(In);
+        }
+        Out.Add(Info);
+    }
+    return Out;
+}
+
+bool UNetSyncComponent::CanCraft(int32 RecipeId) const
+{
+    if (RecipeId < 0 || RecipeId >= RECIPE_COUNT) return false;
+
+    const Recipe& R = RECIPES[RecipeId];
+    for (int32 i = 0; i < R.num_inputs; ++i)
+        if (GetItemCount(R.inputs[i].item) < R.inputs[i].count) return false;
+    return true;
+}
+
+void UNetSyncComponent::RequestCraft(int32 PrinterId, int32 RecipeId)
+{
+    if (!Socket) return;
+
+    cs_packet_craft P{};
+    P.m_size = sizeof(P);
+    P.m_type = PKT_C2S_CRAFT;
+    P.m_printer_id = PrinterId;
+    P.m_recipe = static_cast<unsigned char>(RecipeId);
+
+    int32 Sent = 0;
+    Socket->Send(reinterpret_cast<const uint8*>(&P), sizeof(P), Sent);
+}
+
+bool UNetSyncComponent::FindObjectRow(int32 ObjectType, FObjectRow& OutRow) const
+{
+    if (!ObjectTable) return false;
+    for (const auto& Pair : ObjectTable->GetRowMap())
+    {
+        const FObjectRow* R = reinterpret_cast<const FObjectRow*>(Pair.Value);
+        if (R->ObjectType == ObjectType) { OutRow = *R; return true; }
+    }
+    return false;
+}
+
+APlacedObject* UNetSyncComponent::TraceObject() const
+{
+    APawn* Pawn = Cast<APawn>(GetOwner());
+    if (!Pawn) return nullptr;
+    AController* C = Pawn->GetController();
+    if (!C) return nullptr;
+
+    // 카메라(화면 중앙) 방향으로 쏜다. 3인칭이라 카메라가 뒤에 있으므로 넉넉히
+    FVector Eye; FRotator Rot;
+    C->GetPlayerViewPoint(Eye, Rot);
+    const FVector End = Eye + Rot.Vector() * (INTERACT_RANGE_CM + 1000.f);
+
+    FHitResult Hit;
+    FCollisionQueryParams Q(SCENE_QUERY_STAT(TraceObject), false, Pawn);
+    if (!GetWorld()->LineTraceSingleByChannel(Hit, Eye, End, ECC_Visibility, Q)) return nullptr;
+
+    APlacedObject* Obj = Cast<APlacedObject>(Hit.GetActor());
+    if (!Obj) return nullptr;
+
+    // 사거리는 캐릭터 기준 (서버도 같은 기준으로 검사)
+    if (FVector::Dist(Pawn->GetActorLocation(), Obj->GetActorLocation()) > INTERACT_RANGE_CM) return nullptr;
+    return Obj;
+}
+
+FText UNetSyncComponent::GetCraftResultText(int32 Result) const
+{
+    switch (Result)
+    {
+    case CRAFT_OK:            return FText::FromString(TEXT("제작 완료"));
+    case CRAFT_BAD_RECIPE:    return FText::FromString(TEXT("알 수 없는 레시피"));
+    case CRAFT_BAD_PRINTER:   return FText::FromString(TEXT("시설을 찾을 수 없음"));
+    case CRAFT_WRONG_STATION: return FText::FromString(TEXT("이 시설에서 만들 수 없음"));
+    case CRAFT_TOO_FAR:       return FText::FromString(TEXT("시설에서 너무 멂"));
+    case CRAFT_NO_MATERIAL:   return FText::FromString(TEXT("재료 부족"));
+    case CRAFT_NO_SPACE:      return FText::FromString(TEXT("놓을 공간이 없음"));
+    default:                  return FText::FromString(TEXT("제작 실패"));
     }
 }
