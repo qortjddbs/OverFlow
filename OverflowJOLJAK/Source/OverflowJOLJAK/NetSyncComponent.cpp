@@ -1123,12 +1123,14 @@ static FTransform MakeObjTransform(const obj_transform_net& T)
 
 void UNetSyncComponent::HandleObjectAdd(const sc_packet_object_add& Pkt)
 {
+    UE_LOG(LogTemp, Warning, TEXT("[Object] 수신 id=%d type=%d"), Pkt.m_id, Pkt.m_obj_type);
+
     if (PlacedObjects.Contains(Pkt.m_id)) return;
 
     FObjectRow Row;
-    if (!FindObjectRow(Pkt.m_type, Row) || !Row.ActorClass)
+    if (!FindObjectRow(Pkt.m_obj_type, Row) || !Row.ActorClass)
     {
-        UE_LOG(LogTemp, Error, TEXT("[Object] 종류 %d 의 ActorClass 없음 (DT_Objects 확인)"), Pkt.m_type);
+        UE_LOG(LogTemp, Error, TEXT("[Object] 종류 %d 의 ActorClass 없음 (DT_Objects 확인)"), Pkt.m_obj_type);
         return;
     }
 
@@ -1139,9 +1141,11 @@ void UNetSyncComponent::HandleObjectAdd(const sc_packet_object_add& Pkt)
     if (!Obj) return;
 
     Obj->ObjectId = Pkt.m_id;
-    Obj->ObjectType = Pkt.m_type;
+    Obj->ObjectType = Pkt.m_obj_type;
     Obj->HolderId = Pkt.m_holder;
     PlacedObjects.Add(Pkt.m_id, Obj);
+
+    UE_LOG(LogTemp, Warning, TEXT("[Object] 스폰 완료 id=%d 위치=%s"), Pkt.m_id, *Obj->GetActorLocation().ToString());
 }
 
 void UNetSyncComponent::HandleObjectMove(const sc_packet_object_move& Pkt)

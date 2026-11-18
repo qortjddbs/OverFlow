@@ -20,9 +20,6 @@ public:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Object")
     int32 ObjectType = -1;        // OBJECT_TYPE
 
-    //UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Object") int32 ObjectId = -1;
-    //UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Object") int32 ObjectType = -1;
-
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Object")
     int32 HolderId = -1;          // 잡고 있는 플레이어 (-1 = 없음)
 
