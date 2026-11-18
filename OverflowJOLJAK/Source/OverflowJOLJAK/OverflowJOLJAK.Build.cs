@@ -19,6 +19,7 @@ public class OverflowJOLJAK : ModuleRules
 			"GameplayStateTreeModule",
 			"UMG",
 			"Slate",
+			"SlateCore",
 			"Sockets",
 			"Voxel"
 		});

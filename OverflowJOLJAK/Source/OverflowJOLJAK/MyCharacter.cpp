@@ -1,4 +1,5 @@
 #include "MyCharacter.h"
+#include "InstalledModuleInteractionComponent.h"
 #include "WeaponBase.h"
 
 #include "EnhancedInputComponent.h"
@@ -65,6 +66,12 @@ AMyCharacter::AMyCharacter()
 void AMyCharacter::BeginPlay()
 {
     Super::BeginPlay();
+
+    if (GetNetMode() != NM_DedicatedServer && !FindComponentByClass<UInstalledModuleInteractionComponent>())
+    {
+        UInstalledModuleInteractionComponent* InteractionWidget = NewObject<UInstalledModuleInteractionComponent>(this);
+        InteractionWidget->RegisterComponent();
+    }
 
 	// 2026-10-13 
     bUseControllerRotationPitch = false;
